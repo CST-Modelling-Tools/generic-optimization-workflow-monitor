@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from gow_monitor.domain.models import RunReference, RunState
+from gow_monitor.domain.models import RunReference, RunSnapshot, RunState
 
 
 class RunReaderPort(Protocol):
@@ -11,6 +11,9 @@ class RunReaderPort(Protocol):
 
     def state_of(self, run: RunReference) -> RunState:
         """Determine the observable state of one run."""
+
+    def snapshot_of(self, run: RunReference) -> RunSnapshot:
+        """Return a filesystem-derived snapshot of one run."""
 
 
 class RunControlPort(Protocol):
