@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import heapq
 import json
+import math
+import statistics
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from gow_monitor.domain import (
+    EvaluationPoint,
     ObjectiveDirection,
     RunReference,
     RunSnapshot,
@@ -20,6 +24,33 @@ class GowPathResolution:
     results_root: Path
     runs_root: Path
     direct_run_root: Path | None = None
+
+
+class _RunningMedian:
+    """Track a numeric median in O(log n) per inserted value."""
+
+    def __init__(self) -> None:
+        self._lower: list[float] = []
+        self._upper: list[float] = []
+
+    def add(self, value: float) -> None:
+        if not self._lower or value <= -self._lower[0]:
+            heapq.heappush(self._lower, -value)
+        else:
+            heapq.heappush(self._upper, value)
+
+        if len(self._lower) > len(self._upper) + 1:
+            heapq.heappush(self._upper, -heapq.heappop(self._lower))
+        elif len(self._upper) > len(self._lower):
+            heapq.heappush(self._lower, -heapq.heappop(self._upper))
+
+    @property
+    def value(self) -> float | None:
+        if not self._lower:
+            return None
+        if len(self._lower) == len(self._upper):
+            return (-self._lower[0] + self._upper[0]) / 2.0
+        return -self._lower[0]
 
 
 class GowFilesystemRunReader:
@@ -133,9 +164,16 @@ class GowFilesystemRunReader:
         )
 
     def state_of(self, run: RunReference) -> RunState:
+        records = self._records_by_attempt(run.run_root)
+        return self._state_from_records(run, records)
+
+    @staticmethod
+    def _state_from_records(
+        run: RunReference,
+        records: dict[str, dict[str, Any]],
+    ) -> RunState:
         if not run.run_root.is_dir():
             return RunState.UNKNOWN
-        records = self._records_by_attempt(run.run_root)
         if not records:
             return RunState.WAITING
         if (run.run_root / "results.jsonl").is_file():
@@ -144,11 +182,63 @@ class GowFilesystemRunReader:
 
     def snapshot_of(self, run: RunReference) -> RunSnapshot:
         records = self._records_by_attempt(run.run_root)
+        return self._snapshot_from_records(run, records)
+
+    def history_of(self, run: RunReference) -> tuple[EvaluationPoint, ...]:
+        records = self._records_by_attempt(run.run_root)
+        return self._history_from_records(run, records)
+
+    def snapshot_and_history_of(
+        self,
+        run: RunReference,
+    ) -> tuple[RunSnapshot, tuple[EvaluationPoint, ...]]:
+        records = self._records_by_attempt(run.run_root)
+        return (
+            self._snapshot_from_records(run, records),
+            self._history_from_records(run, records),
+        )
+
+    def _snapshot_from_records(
+        self,
+        run: RunReference,
+        records: dict[str, dict[str, Any]],
+    ) -> RunSnapshot:
         failed = sum(
             1
             for record in records.values()
             if self._fitness_status(record) != "ok"
         )
+
+        valid_results: list[tuple[str | None, float]] = []
+        for record in records.values():
+            if self._fitness_status(record) != "ok":
+                continue
+            objective = self._fitness_objective(record)
+            if objective is None:
+                continue
+            valid_results.append((self._candidate_id(record), objective))
+
+        objectives = [objective for _candidate_id, objective in valid_results]
+        best_candidate_id: str | None = None
+        best_objective: float | None = None
+        latest_objective: float | None = None
+        mean_objective: float | None = None
+        median_objective: float | None = None
+
+        if valid_results:
+            best_selector = (
+                max
+                if run.direction is ObjectiveDirection.MAXIMIZE
+                else min
+            )
+            best_candidate_id, best_objective = best_selector(
+                valid_results,
+                key=lambda item: item[1],
+            )
+            latest_objective = valid_results[-1][1]
+            mean_objective = statistics.fmean(objectives)
+            median_objective = statistics.median(objectives)
+
         source_paths = {
             str(record.get("_monitor_source", ""))
             for record in records.values()
@@ -156,11 +246,66 @@ class GowFilesystemRunReader:
         }
         return RunSnapshot(
             reference=run,
-            state=self.state_of(run),
+            state=self._state_from_records(run, records),
             evaluation_count=len(records),
             failed_evaluations=failed,
             result_sources=len(source_paths),
+            successful_evaluations=len(valid_results),
+            best_objective=best_objective,
+            latest_objective=latest_objective,
+            mean_objective=mean_objective,
+            median_objective=median_objective,
+            best_candidate_id=best_candidate_id,
         )
+
+    def _history_from_records(
+        self,
+        run: RunReference,
+        records: dict[str, dict[str, Any]],
+    ) -> tuple[EvaluationPoint, ...]:
+        history: list[EvaluationPoint] = []
+        running_median = _RunningMedian()
+        objective_sum = 0.0
+        valid_count = 0
+        best_so_far: float | None = None
+
+        for evaluation, record in enumerate(records.values(), start=1):
+            status = self._fitness_status(record)
+            objective = (
+                self._fitness_objective(record)
+                if status == "ok"
+                else None
+            )
+
+            if objective is not None:
+                objective_sum += objective
+                valid_count += 1
+                running_median.add(objective)
+                if best_so_far is None:
+                    best_so_far = objective
+                elif run.direction is ObjectiveDirection.MAXIMIZE:
+                    best_so_far = max(best_so_far, objective)
+                else:
+                    best_so_far = min(best_so_far, objective)
+
+            mean_so_far = (
+                objective_sum / valid_count
+                if valid_count
+                else None
+            )
+            history.append(
+                EvaluationPoint(
+                    evaluation=evaluation,
+                    candidate_id=self._candidate_id(record),
+                    status=status,
+                    objective=objective,
+                    best_so_far=best_so_far,
+                    mean_so_far=mean_so_far,
+                    median_so_far=running_median.value,
+                )
+            )
+
+        return tuple(history)
 
     def diagnostics(self) -> dict[str, object]:
         references = self.discover_runs()
@@ -267,11 +412,34 @@ class GowFilesystemRunReader:
         return f"source:{source}"
 
     @staticmethod
+    def _candidate_id(payload: dict[str, Any]) -> str | None:
+        value = payload.get("candidate_id")
+        if value is None or not str(value).strip():
+            return None
+        return str(value)
+
+    @staticmethod
     def _fitness_status(payload: dict[str, Any]) -> str:
         fitness = payload.get("fitness")
         if isinstance(fitness, dict):
             return str(fitness.get("status", "unknown")).lower()
         return str(payload.get("status", "unknown")).lower()
+
+    @staticmethod
+    def _fitness_objective(payload: dict[str, Any]) -> float | None:
+        fitness = payload.get("fitness")
+        raw_objective = (
+            fitness.get("objective")
+            if isinstance(fitness, dict)
+            else payload.get("objective")
+        )
+        if isinstance(raw_objective, bool):
+            return None
+        try:
+            objective = float(raw_objective)
+        except (TypeError, ValueError):
+            return None
+        return objective if math.isfinite(objective) else None
 
     @staticmethod
     def _read_json_object(path: Path) -> dict[str, Any]:

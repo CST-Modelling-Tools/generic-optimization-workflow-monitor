@@ -1,13 +1,26 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
 from gow_monitor import __version__
 from gow_monitor.ui.main_window import MainWindow
+
+
+def _positive_pid(value: str) -> int:
+    try:
+        pid = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("GOW PID must be an integer") from exc
+
+    if pid < 1:
+        raise argparse.ArgumentTypeError("GOW PID must be positive")
+
+    return pid
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -20,11 +33,27 @@ def build_parser() -> argparse.ArgumentParser:
         action="version",
         version=f"%(prog)s {__version__}",
     )
+    parser.add_argument(
+        "--results-root",
+        type=Path,
+        help=(
+            "Connect immediately to a GOW output directory. The directory "
+            "may be empty when the monitor starts."
+        ),
+    )
+    parser.add_argument(
+        "--gow-pid",
+        type=_positive_pid,
+        help=(
+            "Attach resource telemetry to the root operating-system process "
+            "that is executing GOW."
+        ),
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    build_parser().parse_args(argv)
+    arguments = build_parser().parse_args(argv)
 
     application = QApplication.instance()
     owns_application = application is None
@@ -36,7 +65,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     application.setOrganizationName("CST Modelling Tools")
     application.setStyle("Fusion")
 
-    window = MainWindow()
+    window = MainWindow(gow_pid=arguments.gow_pid)
+
+    if arguments.results_root is not None:
+        results_root = arguments.results_root.expanduser()
+        try:
+            results_root.mkdir(parents=True, exist_ok=True)
+            window.connect_results_root(results_root)
+        except OSError as exc:
+            print(
+                f"Unable to connect GOW results directory: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+
     window.show()
 
     if not owns_application:
