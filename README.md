@@ -30,3 +30,9 @@ ui              PySide6 desktop interface
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\gow-monitor.exe
 ```
+
+## Installation and usage
+
+For installation, live campaign monitoring and completed-run inspection, see:
+
+- [Running GOW with GOW Monitor](docs/RUNNING_GOW_WITH_MONITOR.md)
