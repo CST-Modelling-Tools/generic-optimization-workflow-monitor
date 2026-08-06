@@ -122,8 +122,19 @@ parameter vectors are never estimated.
 The objective keeps its existing high-precision formatting.
 
 All other decimal values shown in metric cards, status details and the
-diversity chart use fixed-point formatting with at most four decimal places.
+diversity chart use fixed-point formatting with exactly two decimal places.
 Scientific notation is not used for these non-objective dashboard values.
+Integer counters remain integers, and elapsed time uses a clock format.
+
+The run-time cards use the earliest observed candidate `started_at` as the
+campaign start. While a run is active, elapsed time advances against the system
+clock. Once the run reaches a terminal state, the timer freezes at the latest
+observed `finished_at`. Evaluations per minute is the cumulative wall-clock
+average:
+
+```text
+evaluations_per_minute = completed_evaluations * 60 / elapsed_seconds
+```
 
 ## Resource telemetry shown in the dashboard
 

@@ -6,7 +6,7 @@ import math
 def format_fixed(
     value: float | int | None,
     *,
-    decimals: int = 4,
+    decimals: int = 2,
     suffix: str = "",
 ) -> str:
     """Format non-objective decimal values without scientific notation."""
@@ -25,7 +25,7 @@ def format_fixed(
 def format_binary_bytes(
     value: int | None,
     *,
-    decimals: int = 4,
+    decimals: int = 2,
 ) -> str:
     """Format a byte count using binary units and fixed decimal precision."""
 

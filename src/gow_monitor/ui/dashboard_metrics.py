@@ -3,9 +3,12 @@ from __future__ import annotations
 import math
 import statistics
 from collections.abc import Iterable
-from dataclasses import dataclass
 
-from gow_monitor.domain import EvaluationPoint, ObjectiveDirection
+from gow_monitor.domain import (
+    EvaluationPoint,
+    ObjectiveDirection,
+    PopulationDiversityPoint,
+)
 
 
 def sample_series(
@@ -43,7 +46,7 @@ def cumulative_evaluations_series(
     points = tuple(history)
     if not points:
         return ()
-    return sample_series(float(index) for index in range(1, len(points) + 1))
+    return sample_series(float(point.evaluation) for point in points)
 
 
 def rolling_valid_rate_series(
@@ -176,24 +179,6 @@ def objective_series(
         if point.is_valid and point.objective is not None
     ]
     return sample_series(values)
-
-@dataclass(frozen=True, slots=True)
-class PopulationDiversityPoint:
-    """Two complementary diversity observations for one generation."""
-
-    generation_id: int
-    evaluation: int
-    spread: float
-    ellipse_area: float
-    population_size: int
-    active_dimensions: int
-
-    @property
-    def diversity(self) -> float:
-        """Backward-compatible alias for the marginal spread metric."""
-
-        return self.spread
-
 
 def population_diversity_series(
     history: Iterable[EvaluationPoint],

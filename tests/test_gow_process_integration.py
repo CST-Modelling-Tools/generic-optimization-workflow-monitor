@@ -64,7 +64,7 @@ def test_resources_panel_renders_only_gow_memory(qtbot) -> None:
     snapshot = _gow_snapshot()
     panel.render_gow_process(snapshot, (snapshot,))
 
-    assert panel.tiles["gow_memory"].value_label.text() == "512.0000 MiB"
+    assert panel.tiles["gow_memory"].value_label.text() == "512.00 MiB"
     assert "gow_cpu" not in panel.tiles
     assert "gow_processes" not in panel.tiles
     assert "gow_threads" not in panel.tiles

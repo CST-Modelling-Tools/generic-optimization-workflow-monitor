@@ -67,10 +67,10 @@ def test_resources_panel_renders_requested_resource_cards(
     )
     assert panel.tiles["cpu"].gauge is not None
     assert panel.tiles["cpu"].gauge.value == pytest.approx(55.12567)
-    assert panel.tiles["cpu"].value_label.text() == "55.1257%"
+    assert panel.tiles["cpu"].value_label.text() == "55.13%"
     assert panel.tiles["memory"].gauge is not None
     assert panel.tiles["memory"].gauge.value == pytest.approx(60.98765)
-    assert panel.tiles["memory"].value_label.text() == "60.9877%"
+    assert panel.tiles["memory"].value_label.text() == "60.99%"
     assert panel.tiles["cores"].value_label.text() == "4 / 4"
     assert panel.tiles["sources"].value_label.text() == "5"
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+import time
+
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QResizeEvent
 from PySide6.QtWidgets import (
     QComboBox,
@@ -17,6 +19,7 @@ from gow_monitor.domain import (
     GowProcessResourceSnapshot,
     ObjectiveDirection,
     RunSnapshot,
+    RunState,
     SystemResourceSnapshot,
 )
 from gow_monitor.ui.dashboard_metrics import (
@@ -40,6 +43,14 @@ from gow_monitor.ui.widgets import (
 
 class OverviewPage(QWidget):
     """Dense live dashboard for the currently selected GOW run."""
+
+    _TERMINAL_STATES = frozenset(
+        {
+            RunState.COMPLETED,
+            RunState.FAILED,
+            RunState.STOPPED,
+        }
+    )
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -74,6 +85,8 @@ class OverviewPage(QWidget):
         self.cards = {
             "best": KpiCard("Best objective"),
             "evaluations": KpiCard("Evaluations"),
+            "elapsed": KpiCard("Run time"),
+            "throughput": KpiCard("Evaluations / min"),
             "improvement": KpiCard("Improvement rate"),
             "success": KpiCard("Success rate", visual="gauge"),
             "failures": KpiCard("Failure rate", visual="gauge"),
@@ -155,7 +168,14 @@ class OverviewPage(QWidget):
         layout.addLayout(dashboard_layout, 3)
         layout.addLayout(self.lower_layout, 2)
 
+        self.runtime_timer = QTimer(self)
+        self.runtime_timer.setInterval(1000)
+        self.runtime_timer.timeout.connect(
+            self._refresh_runtime_cards
+        )
+
         self.clear()
+        self.runtime_timer.start()
 
     @property
     def lower_panels_stacked(self) -> bool:
@@ -251,9 +271,29 @@ class OverviewPage(QWidget):
             tone="good" if snapshot.best_objective is not None else "neutral",
             series=best_series(history),
         )
+        if snapshot.planned_evaluations is not None:
+            planned = snapshot.planned_evaluations
+            evaluation_value = (
+                f"{snapshot.evaluation_count:,} / {planned:,}"
+            )
+            completion = (
+                snapshot.evaluation_count / planned * 100.0
+                if planned
+                else 0.0
+            )
+            evaluation_detail = (
+                f"{format_fixed(completion, suffix='%')} completed"
+                f" | {snapshot.result_sources} source(s)"
+            )
+        else:
+            evaluation_value = f"{snapshot.evaluation_count:,}"
+            evaluation_detail = (
+                f"{snapshot.result_sources} distinct source(s)"
+            )
+
         self.cards["evaluations"].set_value(
-            f"{snapshot.evaluation_count:,}",
-            detail=f"{snapshot.result_sources} distinct source(s)",
+            evaluation_value,
+            detail=evaluation_detail,
             series=cumulative_evaluations_series(history),
         )
         self.cards["improvement"].set_value(
@@ -281,7 +321,12 @@ class OverviewPage(QWidget):
             gauge_value=failure_rate,
         )
 
+        self._refresh_runtime_cards()
+
         self.progress_chart.set_history(history, reference.direction)
+        self.diversity_chart.set_precomputed_series(
+            snapshot.population_diversity
+        )
         self.diversity_chart.set_history(history)
         self.run_health_panel.render(snapshot, history)
         self.search_behavior_panel.render(snapshot, history)
@@ -294,6 +339,83 @@ class OverviewPage(QWidget):
             f"Evaluations: {snapshot.evaluation_count:,}"
         )
         self.chart_footer.setToolTip(str(reference.run_root))
+
+    def _refresh_runtime_cards(self) -> None:
+        snapshot = self._snapshot
+        if snapshot is None:
+            return
+
+        elapsed = self._elapsed_seconds(snapshot)
+        if elapsed is None:
+            self.cards["elapsed"].set_value(
+                "N/A",
+                detail="Timing data unavailable",
+            )
+            self.cards["throughput"].set_value(
+                "N/A",
+                detail="Timing data unavailable",
+            )
+            return
+
+        terminal = snapshot.state in self._TERMINAL_STATES
+        elapsed_detail = "Final duration" if terminal else "Running"
+        throughput_detail = (
+            "Final average"
+            if terminal
+            else "Average since run start"
+        )
+        throughput = (
+            snapshot.evaluation_count * 60.0 / elapsed
+            if elapsed >= 1.0
+            else None
+        )
+
+        self.cards["elapsed"].set_value(
+            self._format_duration(elapsed),
+            detail=elapsed_detail,
+            tone="good" if terminal else "neutral",
+        )
+        self.cards["throughput"].set_value(
+            (
+                format_fixed(
+                    throughput,
+                    suffix=" eval/min",
+                )
+                if throughput is not None
+                else "N/A"
+            ),
+            detail=throughput_detail,
+            tone="good" if throughput is not None else "neutral",
+        )
+
+    @classmethod
+    def _elapsed_seconds(
+        cls,
+        snapshot: RunSnapshot,
+    ) -> float | None:
+        started_at = snapshot.run_started_at
+        if started_at is None:
+            return None
+
+        if snapshot.state in cls._TERMINAL_STATES:
+            finished_at = snapshot.run_finished_at
+            if finished_at is None:
+                return None
+            end_time = finished_at
+        else:
+            end_time = time.time()
+
+        return max(0.0, end_time - started_at)
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        total_seconds = max(0, int(seconds))
+        days, remainder = divmod(total_seconds, 86_400)
+        hours, remainder = divmod(remainder, 3_600)
+        minutes, seconds_part = divmod(remainder, 60)
+
+        clock = f"{hours:02d}:{minutes:02d}:{seconds_part:02d}"
+        return f"{days}d {clock}" if days else clock
 
     def render_resource_snapshot(
         self,
@@ -321,6 +443,7 @@ class OverviewPage(QWidget):
         for card in self.cards.values():
             card.set_value("-", detail="Waiting for GOW artifacts")
         self.progress_chart.set_history((), ObjectiveDirection.UNKNOWN)
+        self.diversity_chart.set_precomputed_series(())
         self.diversity_chart.set_history(())
         self.run_health_panel.clear()
         self.search_behavior_panel.clear()

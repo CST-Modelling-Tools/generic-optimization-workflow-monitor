@@ -5,18 +5,23 @@ import json
 import math
 import re
 import statistics
+import threading
+from collections import deque
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from gow_monitor.domain import (
     EvaluationPoint,
     ObjectiveDirection,
+    PopulationDiversityPoint,
     RunReference,
     RunSnapshot,
     RunState,
 )
+from gow_monitor.domain.diversity import confidence_ellipse_area
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,8 +59,313 @@ class _RunningMedian:
         return -self._lower[0]
 
 
+@dataclass(slots=True)
+class _GenerationMoments:
+    count: int = 0
+    evaluation: int = 0
+    sums: dict[str, float] = field(default_factory=dict)
+    cross_sums: dict[tuple[str, str], float] = field(
+        default_factory=dict
+    )
+
+    def add(
+        self,
+        *,
+        evaluation: int,
+        parameters: dict[str, float],
+    ) -> None:
+        self.count += 1
+        self.evaluation = max(self.evaluation, evaluation)
+        names = tuple(sorted(parameters))
+
+        for name in names:
+            self.sums[name] = (
+                self.sums.get(name, 0.0) + parameters[name]
+            )
+
+        for left_index, left_name in enumerate(names):
+            left_value = parameters[left_name]
+            for right_name in names[left_index:]:
+                key = (left_name, right_name)
+                self.cross_sums[key] = (
+                    self.cross_sums.get(key, 0.0)
+                    + left_value * parameters[right_name]
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class _CachedShardRun:
+    fingerprint: tuple[tuple[str, int, int], ...]
+    snapshot: RunSnapshot
+    history: tuple[EvaluationPoint, ...]
+
+
+class _ShardRunAccumulator:
+    _MAX_HISTORY_POINTS = 4096
+    _RECENT_HISTORY_POINTS = 100
+
+    def __init__(
+        self,
+        run: RunReference,
+    ) -> None:
+        self.run = run
+        self.evaluation_count = 0
+        self.failed_evaluations = 0
+        self.successful_evaluations = 0
+        self.objective_sum = 0.0
+        self.latest_objective: float | None = None
+        self.best_objective: float | None = None
+        self.best_candidate_id: str | None = None
+        self.run_started_at: float | None = None
+        self.run_finished_at: float | None = None
+        self.median = _RunningMedian()
+        self.sample_step = 1
+        self.sampled_history: list[EvaluationPoint] = []
+        self.recent_history: deque[EvaluationPoint] = deque(
+            maxlen=self._RECENT_HISTORY_POINTS
+        )
+        self.seen_keys: set[str] = set()
+        self.parameterized_count = 0
+        self.parameter_presence: dict[str, int] = {}
+        self.parameter_minima: dict[str, float] = {}
+        self.parameter_maxima: dict[str, float] = {}
+        self.generations: dict[int, _GenerationMoments] = {}
+
+    def consume(
+        self,
+        payload: dict[str, Any],
+        *,
+        source: Path,
+    ) -> None:
+        key = GowFilesystemRunReader._record_key(
+            payload,
+            source,
+        )
+        if key in self.seen_keys:
+            return
+        self.seen_keys.add(key)
+
+        self.evaluation_count += 1
+        evaluation = self.evaluation_count
+        status = GowFilesystemRunReader._fitness_status(payload)
+        objective = (
+            GowFilesystemRunReader._fitness_objective(payload)
+            if status == "ok"
+            else None
+        )
+        candidate_id = GowFilesystemRunReader._candidate_id(payload)
+        generation_id = GowFilesystemRunReader._generation_id(payload)
+        started_at = GowFilesystemRunReader._timestamp_value(
+            payload.get("started_at")
+        )
+        finished_at = GowFilesystemRunReader._timestamp_value(
+            payload.get("finished_at")
+        )
+
+        if started_at is not None:
+            self.run_started_at = (
+                started_at
+                if self.run_started_at is None
+                else min(self.run_started_at, started_at)
+            )
+        if finished_at is not None:
+            self.run_finished_at = (
+                finished_at
+                if self.run_finished_at is None
+                else max(self.run_finished_at, finished_at)
+            )
+
+        if status != "ok":
+            self.failed_evaluations += 1
+
+        if objective is not None:
+            self.successful_evaluations += 1
+            self.objective_sum += objective
+            self.latest_objective = objective
+            self.median.add(objective)
+
+            if self.best_objective is None:
+                self.best_objective = objective
+                self.best_candidate_id = candidate_id
+            elif self.run.direction is ObjectiveDirection.MAXIMIZE:
+                if objective > self.best_objective:
+                    self.best_objective = objective
+                    self.best_candidate_id = candidate_id
+            elif objective < self.best_objective:
+                self.best_objective = objective
+                self.best_candidate_id = candidate_id
+
+        mean_so_far = (
+            self.objective_sum / self.successful_evaluations
+            if self.successful_evaluations
+            else None
+        )
+        point = EvaluationPoint(
+            evaluation=evaluation,
+            candidate_id=candidate_id,
+            status=status,
+            objective=objective,
+            best_so_far=self.best_objective,
+            mean_so_far=mean_so_far,
+            median_so_far=self.median.value,
+            generation_id=generation_id,
+        )
+        self.recent_history.append(point)
+
+        if evaluation == 1 or evaluation % self.sample_step == 0:
+            self.sampled_history.append(point)
+            if len(self.sampled_history) > self._MAX_HISTORY_POINTS:
+                self.sampled_history = self.sampled_history[::2]
+                self.sample_step *= 2
+
+        parameters = dict(
+            GowFilesystemRunReader._parameter_items(payload)
+        )
+        if generation_id is not None and parameters:
+            self._consume_parameters(
+                evaluation=evaluation,
+                generation_id=generation_id,
+                parameters=parameters,
+            )
+
+    def _consume_parameters(
+        self,
+        *,
+        evaluation: int,
+        generation_id: int,
+        parameters: dict[str, float],
+    ) -> None:
+        self.parameterized_count += 1
+
+        for name, value in parameters.items():
+            self.parameter_presence[name] = (
+                self.parameter_presence.get(name, 0) + 1
+            )
+            self.parameter_minima[name] = min(
+                value,
+                self.parameter_minima.get(name, value),
+            )
+            self.parameter_maxima[name] = max(
+                value,
+                self.parameter_maxima.get(name, value),
+            )
+
+        generation = self.generations.setdefault(
+            generation_id,
+            _GenerationMoments(),
+        )
+        generation.add(
+            evaluation=evaluation,
+            parameters=parameters,
+        )
+
+    def history(self) -> tuple[EvaluationPoint, ...]:
+        merged = {
+            point.evaluation: point
+            for point in self.sampled_history
+        }
+        merged.update(
+            {
+                point.evaluation: point
+                for point in self.recent_history
+            }
+        )
+        if self.recent_history:
+            latest = self.recent_history[-1]
+            merged[latest.evaluation] = latest
+        return tuple(merged[index] for index in sorted(merged))
+
+    def diversity(self) -> tuple[PopulationDiversityPoint, ...]:
+        if self.parameterized_count == 0:
+            return ()
+
+        common_names = tuple(
+            sorted(
+                name
+                for name, count in self.parameter_presence.items()
+                if count == self.parameterized_count
+            )
+        )
+        active_names = tuple(
+            name
+            for name in common_names
+            if not math.isclose(
+                self.parameter_minima[name],
+                self.parameter_maxima[name],
+                rel_tol=0.0,
+                abs_tol=1e-15,
+            )
+        )
+        observations: list[PopulationDiversityPoint] = []
+
+        for generation_id in sorted(self.generations):
+            generation = self.generations[generation_id]
+            covariance = self._normalized_covariance(
+                generation,
+                active_names,
+            )
+            spread = sum(
+                math.sqrt(max(0.0, covariance[index][index]))
+                for index in range(len(covariance))
+            )
+            observations.append(
+                PopulationDiversityPoint(
+                    generation_id=generation_id,
+                    evaluation=generation.evaluation,
+                    spread=spread,
+                    ellipse_area=confidence_ellipse_area(covariance),
+                    population_size=generation.count,
+                    active_dimensions=len(active_names),
+                )
+            )
+
+        return tuple(observations)
+
+    def _normalized_covariance(
+        self,
+        generation: _GenerationMoments,
+        active_names: tuple[str, ...],
+    ) -> tuple[tuple[float, ...], ...]:
+        if generation.count < 2 or not active_names:
+            return ()
+
+        denominator = generation.count - 1
+        rows: list[tuple[float, ...]] = []
+
+        for left_name in active_names:
+            row: list[float] = []
+            left_range = (
+                self.parameter_maxima[left_name]
+                - self.parameter_minima[left_name]
+            )
+            for right_name in active_names:
+                right_range = (
+                    self.parameter_maxima[right_name]
+                    - self.parameter_minima[right_name]
+                )
+                key = tuple(sorted((left_name, right_name)))
+                cross_sum = generation.cross_sums.get(key, 0.0)
+                raw_covariance = (
+                    cross_sum
+                    - (
+                        generation.sums[left_name]
+                        * generation.sums[right_name]
+                        / generation.count
+                    )
+                ) / denominator
+                row.append(
+                    raw_covariance / (left_range * right_range)
+                )
+            rows.append(tuple(row))
+
+        return tuple(rows)
+
+
 class GowFilesystemRunReader:
     """Read GOW artifacts from an output root or any nested folder."""
+
+    _shard_cache: dict[Path, _CachedShardRun] = {}
+    _shard_cache_lock = threading.Lock()
 
     def __init__(self, selected_path: str | Path) -> None:
         self.resolution = self.resolve_selected_path(selected_path)
@@ -165,8 +475,7 @@ class GowFilesystemRunReader:
         )
 
     def state_of(self, run: RunReference) -> RunState:
-        records = self._records_by_attempt(run.run_root)
-        return self._state_from_records(run, records)
+        return self.snapshot_of(run).state
 
     @staticmethod
     def _state_from_records(
@@ -182,17 +491,23 @@ class GowFilesystemRunReader:
         return RunState.RUNNING
 
     def snapshot_of(self, run: RunReference) -> RunSnapshot:
-        records = self._records_by_attempt(run.run_root)
-        return self._snapshot_from_records(run, records)
+        return self.snapshot_and_history_of(run)[0]
 
     def history_of(self, run: RunReference) -> tuple[EvaluationPoint, ...]:
-        records = self._records_by_attempt(run.run_root)
-        return self._history_from_records(run, records)
+        return self.snapshot_and_history_of(run)[1]
 
     def snapshot_and_history_of(
         self,
         run: RunReference,
     ) -> tuple[RunSnapshot, tuple[EvaluationPoint, ...]]:
+        shard_paths = self._generation_shard_paths(run.run_root)
+        if shard_paths:
+            cached = self._snapshot_and_history_from_shards(
+                run,
+                shard_paths,
+            )
+            return cached.snapshot, cached.history
+
         records = self._records_by_attempt(run.run_root)
         return (
             self._snapshot_from_records(run, records),
@@ -245,6 +560,27 @@ class GowFilesystemRunReader:
             for record in records.values()
             if record.get("_monitor_source")
         }
+        started_values = tuple(
+            timestamp
+            for record in records.values()
+            if (
+                timestamp := self._timestamp_value(
+                    record.get("started_at")
+                )
+            )
+            is not None
+        )
+        finished_values = tuple(
+            timestamp
+            for record in records.values()
+            if (
+                timestamp := self._timestamp_value(
+                    record.get("finished_at")
+                )
+            )
+            is not None
+        )
+        metadata = self._metadata_for(run.run_id, run.run_root)
         return RunSnapshot(
             reference=run,
             state=self._state_from_records(run, records),
@@ -257,6 +593,18 @@ class GowFilesystemRunReader:
             mean_objective=mean_objective,
             median_objective=median_objective,
             best_candidate_id=best_candidate_id,
+            run_started_at=(
+                min(started_values) if started_values else None
+            ),
+            run_finished_at=(
+                max(finished_values) if finished_values else None
+            ),
+            planned_evaluations=self._nonnegative_int(
+                metadata.get("max_evaluations")
+            ),
+            completed_generations=self._nonnegative_int(
+                metadata.get("completed_generations")
+            ),
         )
 
     def _history_from_records(
@@ -309,6 +657,174 @@ class GowFilesystemRunReader:
             )
 
         return tuple(history)
+
+    @staticmethod
+    def _generation_shard_paths(
+        run_root: Path,
+    ) -> tuple[Path, ...]:
+        generation_root = run_root / "generations"
+        if not generation_root.is_dir():
+            return ()
+        try:
+            return tuple(sorted(generation_root.glob("g*.jsonl")))
+        except OSError:
+            return ()
+
+    def _snapshot_and_history_from_shards(
+        self,
+        run: RunReference,
+        shard_paths: tuple[Path, ...],
+    ) -> _CachedShardRun:
+        metadata_path = run.run_root / "summary.json"
+        fingerprint_items: list[tuple[str, int, int]] = []
+
+        for path in shard_paths:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            fingerprint_items.append(
+                (str(path), stat.st_size, stat.st_mtime_ns)
+            )
+
+        if metadata_path.is_file():
+            try:
+                stat = metadata_path.stat()
+            except OSError:
+                pass
+            else:
+                fingerprint_items.append(
+                    (
+                        str(metadata_path),
+                        stat.st_size,
+                        stat.st_mtime_ns,
+                    )
+                )
+
+        fingerprint = tuple(fingerprint_items)
+        cache_key = run.run_root.resolve()
+
+        with self._shard_cache_lock:
+            cached = self._shard_cache.get(cache_key)
+            if cached is not None and cached.fingerprint == fingerprint:
+                return cached
+
+        accumulator = _ShardRunAccumulator(run)
+        source_count = 0
+
+        for shard_path in shard_paths:
+            source_count += 1
+            for line_number, payload in self._read_jsonl(shard_path):
+                source = Path(f"{shard_path}#{line_number}")
+                accumulator.consume(payload, source=source)
+
+        metadata = self._metadata_for(run.run_id, run.run_root)
+        finalized = bool(metadata.get("finalized", False))
+        if finalized or (run.run_root / "results.jsonl").is_file():
+            state = RunState.COMPLETED
+        elif accumulator.evaluation_count:
+            state = RunState.RUNNING
+        else:
+            state = RunState.WAITING
+
+        mean_objective = (
+            accumulator.objective_sum
+            / accumulator.successful_evaluations
+            if accumulator.successful_evaluations
+            else None
+        )
+        history = accumulator.history()
+        snapshot = RunSnapshot(
+            reference=run,
+            state=state,
+            evaluation_count=accumulator.evaluation_count,
+            failed_evaluations=accumulator.failed_evaluations,
+            result_sources=source_count,
+            successful_evaluations=(
+                accumulator.successful_evaluations
+            ),
+            best_objective=accumulator.best_objective,
+            latest_objective=accumulator.latest_objective,
+            mean_objective=mean_objective,
+            median_objective=accumulator.median.value,
+            best_candidate_id=accumulator.best_candidate_id,
+            run_started_at=accumulator.run_started_at,
+            run_finished_at=accumulator.run_finished_at,
+            planned_evaluations=self._nonnegative_int(
+                metadata.get("max_evaluations")
+            ),
+            completed_generations=self._nonnegative_int(
+                metadata.get("completed_generations")
+            ),
+            history_is_sampled=(
+                accumulator.evaluation_count > len(history)
+            ),
+            population_diversity=accumulator.diversity(),
+        )
+        result = _CachedShardRun(
+            fingerprint=fingerprint,
+            snapshot=snapshot,
+            history=history,
+        )
+
+        with self._shard_cache_lock:
+            self._shard_cache[cache_key] = result
+
+        return result
+
+    @staticmethod
+    def _timestamp_value(value: Any) -> float | None:
+        if value is None or isinstance(value, bool):
+            return None
+
+        if isinstance(value, (int, float)):
+            numeric = float(value)
+            if math.isfinite(numeric) and numeric >= 0.0:
+                return numeric
+            return None
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        try:
+            numeric = float(text)
+        except ValueError:
+            numeric = None
+        if (
+            numeric is not None
+            and math.isfinite(numeric)
+            and numeric >= 0.0
+        ):
+            return numeric
+
+        normalized = (
+            text[:-1] + "+00:00"
+            if text.upper().endswith("Z")
+            else text
+        )
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+
+        timestamp = parsed.timestamp()
+        if not math.isfinite(timestamp) or timestamp < 0.0:
+            return None
+        return timestamp
+
+    @staticmethod
+    def _nonnegative_int(value: Any) -> int | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed >= 0 else None
 
     def diagnostics(self) -> dict[str, object]:
         references = self.discover_runs()
@@ -375,6 +891,16 @@ class GowFilesystemRunReader:
         self,
         run_root: Path,
     ) -> str | None:
+        shard_paths = self._generation_shard_paths(run_root)
+        if shard_paths:
+            for _line_number, record in self._read_jsonl(
+                shard_paths[0]
+            ):
+                problem_id = record.get("problem_id")
+                if isinstance(problem_id, str) and problem_id.strip():
+                    return problem_id
+                break
+
         for record in self._records_by_attempt(run_root).values():
             problem_id = record.get("problem_id")
             if isinstance(problem_id, str) and problem_id.strip():

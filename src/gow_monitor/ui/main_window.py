@@ -472,8 +472,15 @@ class MainWindow(QMainWindow):
         self.sidebar_problem.setText(
             f"Problem: {reference.problem_id or 'unknown'}"
         )
+        if snapshot.planned_evaluations is None:
+            evaluations_text = f"{snapshot.evaluation_count:,}"
+        else:
+            evaluations_text = (
+                f"{snapshot.evaluation_count:,} / "
+                f"{snapshot.planned_evaluations:,}"
+            )
         self.sidebar_evaluations.setText(
-            f"Evaluations: {snapshot.evaluation_count}"
+            f"Evaluations: {evaluations_text}"
         )
         self.sidebar_failures.setText(
             f"Failures: {snapshot.failed_evaluations}"

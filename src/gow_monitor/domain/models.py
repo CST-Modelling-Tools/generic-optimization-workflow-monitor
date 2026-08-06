@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -67,6 +68,34 @@ class EvaluationPoint:
 
 
 @dataclass(frozen=True, slots=True)
+class PopulationDiversityPoint:
+    """Two complementary diversity observations for one generation."""
+
+    generation_id: int
+    evaluation: int
+    spread: float
+    ellipse_area: float
+    population_size: int
+    active_dimensions: int
+
+    def __post_init__(self) -> None:
+        if self.generation_id < 0:
+            raise ValueError("generation_id cannot be negative")
+        if self.evaluation < 1:
+            raise ValueError("evaluation must be at least 1")
+        if self.population_size < 0:
+            raise ValueError("population_size cannot be negative")
+        if self.active_dimensions < 0:
+            raise ValueError("active_dimensions cannot be negative")
+
+    @property
+    def diversity(self) -> float:
+        """Backward-compatible alias for the marginal spread metric."""
+
+        return self.spread
+
+
+@dataclass(frozen=True, slots=True)
 class RunSnapshot:
     reference: RunReference
     state: RunState
@@ -79,6 +108,12 @@ class RunSnapshot:
     mean_objective: float | None = None
     median_objective: float | None = None
     best_candidate_id: str | None = None
+    planned_evaluations: int | None = None
+    completed_generations: int | None = None
+    history_is_sampled: bool = False
+    population_diversity: tuple[PopulationDiversityPoint, ...] = ()
+    run_started_at: float | None = None
+    run_finished_at: float | None = None
 
     def __post_init__(self) -> None:
         if self.evaluation_count < 0:
@@ -93,6 +128,36 @@ class RunSnapshot:
             raise ValueError("successful_evaluations cannot exceed evaluation_count")
         if self.result_sources < 0:
             raise ValueError("result_sources cannot be negative")
+        if (
+            self.planned_evaluations is not None
+            and self.planned_evaluations < 0
+        ):
+            raise ValueError("planned_evaluations cannot be negative")
+        if (
+            self.completed_generations is not None
+            and self.completed_generations < 0
+        ):
+            raise ValueError("completed_generations cannot be negative")
+
+        for field_name, value in (
+            ("run_started_at", self.run_started_at),
+            ("run_finished_at", self.run_finished_at),
+        ):
+            if value is None:
+                continue
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(
+                    f"{field_name} must be a finite non-negative timestamp"
+                )
+
+        if (
+            self.run_started_at is not None
+            and self.run_finished_at is not None
+            and self.run_finished_at < self.run_started_at
+        ):
+            raise ValueError(
+                "run_finished_at cannot precede run_started_at"
+            )
 
     @property
     def success_rate(self) -> float:

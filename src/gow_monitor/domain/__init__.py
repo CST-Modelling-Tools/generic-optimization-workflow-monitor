@@ -1,7 +1,8 @@
-﻿from gow_monitor.domain.models import (
+from gow_monitor.domain.models import (
     EvaluationPoint,
     GpuResourceSnapshot,
     ObjectiveDirection,
+    PopulationDiversityPoint,
     RunReference,
     RunSnapshot,
     RunState,
@@ -14,6 +15,7 @@ __all__ = [
     "GpuResourceSnapshot",
     "GowProcessResourceSnapshot",
     "ObjectiveDirection",
+    "PopulationDiversityPoint",
     "RunReference",
     "RunSnapshot",
     "RunState",

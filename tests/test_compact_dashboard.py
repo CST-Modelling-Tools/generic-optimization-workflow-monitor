@@ -140,7 +140,7 @@ def test_overview_renders_sparklines_and_lower_panels(qtbot) -> None:
         "Over last 100 evaluations"
     )
     assert page.search_behavior_panel.tiles["valid_rate"].value_label.text() == (
-        "100.0000%"
+        "100.00%"
     )
     assert (
         page.resources_panel.tiles["gow_memory"].value_label.text()

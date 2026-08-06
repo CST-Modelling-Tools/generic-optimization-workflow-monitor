@@ -30,6 +30,7 @@ class PopulationDiversityChart(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._history: tuple[EvaluationPoint, ...] = ()
+        self._precomputed: tuple[PopulationDiversityPoint, ...] = ()
         self._window_size: int | None = None
         self.setMinimumHeight(125)
         self.setToolTip(
@@ -57,6 +58,13 @@ class PopulationDiversityChart(QWidget):
         self._history = tuple(history)
         self.update()
 
+    def set_precomputed_series(
+        self,
+        series: Iterable[PopulationDiversityPoint],
+    ) -> None:
+        self._precomputed = tuple(series)
+        self.update()
+
     def set_window_size(self, window_size: int | None) -> None:
         if window_size is not None and window_size < 2:
             raise ValueError("window_size must be at least 2")
@@ -64,7 +72,11 @@ class PopulationDiversityChart(QWidget):
         self.update()
 
     def visible_samples(self) -> tuple[PopulationDiversityPoint, ...]:
-        samples = population_diversity_series(self._history)
+        samples = (
+            self._precomputed
+            if self._precomputed
+            else population_diversity_series(self._history)
+        )
         if self._window_size is None or not self._history:
             return samples
 
