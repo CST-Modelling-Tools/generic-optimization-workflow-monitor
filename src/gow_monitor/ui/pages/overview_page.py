@@ -27,9 +27,11 @@ from gow_monitor.ui.dashboard_metrics import (
     rolling_failure_rate_series,
     rolling_valid_rate_series,
 )
+from gow_monitor.ui.formatting import format_fixed
 from gow_monitor.ui.widgets import (
     KpiCard,
     ObjectiveProgressChart,
+    PopulationDiversityChart,
     ResourcesPanel,
     RunHealthPanel,
     SearchBehaviorPanel,
@@ -46,8 +48,8 @@ class OverviewPage(QWidget):
         self._history: tuple[EvaluationPoint, ...] = ()
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(9)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
 
         heading_row = QHBoxLayout()
         heading_row.setContentsMargins(0, 0, 0, 0)
@@ -60,13 +62,14 @@ class OverviewPage(QWidget):
         )
         description.setObjectName("description")
         description.setWordWrap(True)
+        description.setMaximumHeight(32)
 
         heading_row.addWidget(self.title_label)
         heading_row.addWidget(description, 1)
 
         cards_layout = QHBoxLayout()
         cards_layout.setContentsMargins(0, 0, 0, 0)
-        cards_layout.setSpacing(9)
+        cards_layout.setSpacing(6)
 
         self.cards = {
             "best": KpiCard("Best objective"),
@@ -80,13 +83,13 @@ class OverviewPage(QWidget):
 
         dashboard_layout = QHBoxLayout()
         dashboard_layout.setContentsMargins(0, 0, 0, 0)
-        dashboard_layout.setSpacing(9)
+        dashboard_layout.setSpacing(6)
 
         progress_panel = QFrame()
         progress_panel.setObjectName("dashboardPanel")
         progress_layout = QVBoxLayout(progress_panel)
-        progress_layout.setContentsMargins(11, 9, 11, 9)
-        progress_layout.setSpacing(7)
+        progress_layout.setContentsMargins(8, 6, 8, 6)
+        progress_layout.setSpacing(4)
 
         progress_header = QHBoxLayout()
         progress_header.setContentsMargins(0, 0, 0, 0)
@@ -107,6 +110,9 @@ class OverviewPage(QWidget):
         progress_header.addWidget(self.window_selector)
 
         self.progress_chart = ObjectiveProgressChart()
+        self.diversity_title = QLabel("Diversity")
+        self.diversity_title.setObjectName("panelTitle")
+        self.diversity_chart = PopulationDiversityChart()
         self.chart_meta_bar = QFrame()
         self.chart_meta_bar.setObjectName("chartMetaBar")
         chart_meta_layout = QHBoxLayout(self.chart_meta_bar)
@@ -120,7 +126,9 @@ class OverviewPage(QWidget):
         chart_meta_layout.addWidget(self.chart_footer)
 
         progress_layout.addLayout(progress_header)
-        progress_layout.addWidget(self.progress_chart, 1)
+        progress_layout.addWidget(self.progress_chart, 3)
+        progress_layout.addWidget(self.diversity_title)
+        progress_layout.addWidget(self.diversity_chart, 2)
         progress_layout.addWidget(self.chart_meta_bar)
 
         self.run_health_panel = RunHealthPanel()
@@ -134,8 +142,8 @@ class OverviewPage(QWidget):
 
         self.lower_layout = QGridLayout()
         self.lower_layout.setContentsMargins(0, 0, 0, 0)
-        self.lower_layout.setHorizontalSpacing(9)
-        self.lower_layout.setVerticalSpacing(9)
+        self.lower_layout.setHorizontalSpacing(6)
+        self.lower_layout.setVerticalSpacing(6)
 
         self.search_behavior_panel = SearchBehaviorPanel()
         self.resources_panel = ResourcesPanel()
@@ -157,7 +165,7 @@ class OverviewPage(QWidget):
         super().resizeEvent(event)
 
         self._reflow_lower_panels(
-            stacked=event.size().width() < 1180
+            stacked=event.size().width() < 1100
         )
 
     def _reflow_lower_panels(
@@ -230,7 +238,7 @@ class OverviewPage(QWidget):
             reference.direction,
         )
         improvement_text = (
-            f"{improvement:.4g}%"
+            format_fixed(improvement, suffix="%")
             if improvement is not None
             else "N/A"
         )
@@ -259,14 +267,14 @@ class OverviewPage(QWidget):
             series=recent_improvement_series(history, reference.direction),
         )
         self.cards["success"].set_value(
-            f"{success_rate:.2f}%",
+            format_fixed(success_rate, suffix="%"),
             detail=f"{snapshot.successful_evaluations} valid objectives",
             tone="good" if snapshot.successful_evaluations else "warning",
             series=rolling_valid_rate_series(history),
             gauge_value=success_rate,
         )
         self.cards["failures"].set_value(
-            f"{failure_rate:.2f}%",
+            format_fixed(failure_rate, suffix="%"),
             detail=f"{snapshot.failed_evaluations} failed evaluations",
             tone="bad" if snapshot.failed_evaluations else "good",
             series=rolling_failure_rate_series(history),
@@ -274,6 +282,7 @@ class OverviewPage(QWidget):
         )
 
         self.progress_chart.set_history(history, reference.direction)
+        self.diversity_chart.set_history(history)
         self.run_health_panel.render(snapshot, history)
         self.search_behavior_panel.render(snapshot, history)
         self.resources_panel.render(snapshot)
@@ -312,6 +321,7 @@ class OverviewPage(QWidget):
         for card in self.cards.values():
             card.set_value("-", detail="Waiting for GOW artifacts")
         self.progress_chart.set_history((), ObjectiveDirection.UNKNOWN)
+        self.diversity_chart.set_history(())
         self.run_health_panel.clear()
         self.search_behavior_panel.clear()
         self.resources_panel.clear()
@@ -322,3 +332,4 @@ class OverviewPage(QWidget):
         if window_size is not None:
             window_size = int(window_size)
         self.progress_chart.set_window_size(window_size)
+        self.diversity_chart.set_window_size(window_size)

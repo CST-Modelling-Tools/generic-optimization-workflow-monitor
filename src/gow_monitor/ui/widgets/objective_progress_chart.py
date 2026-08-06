@@ -26,14 +26,14 @@ class ObjectiveProgressChart(QWidget):
         self._history: tuple[EvaluationPoint, ...] = ()
         self._direction = ObjectiveDirection.UNKNOWN
         self._window_size: int | None = None
-        self.setMinimumHeight(260)
+        self.setMinimumHeight(185)
         self.setToolTip(
             "Best-so-far, cumulative median, cumulative mean and failed "
             "evaluations. Positive high-dynamic-range data uses log scale."
         )
 
     def sizeHint(self) -> QSize:
-        return QSize(760, 310)
+        return QSize(760, 210)
 
     @property
     def history(self) -> tuple[EvaluationPoint, ...]:
@@ -74,10 +74,10 @@ class ObjectiveProgressChart(QWidget):
         painter.fillRect(self.rect(), QColor("#0A121E"))
 
         chart_rect = QRectF(
-            70.0,
-            44.0,
-            max(10.0, self.width() - 92.0),
-            max(10.0, self.height() - 94.0),
+            62.0,
+            30.0,
+            max(10.0, self.width() - 82.0),
+            max(10.0, self.height() - 68.0),
         )
         self._draw_frame(painter, chart_rect)
 

@@ -32,18 +32,18 @@ class KpiCard(QFrame):
         self.setObjectName("kpiCard")
         self.setProperty("kpiTone", "neutral")
         self.setProperty("kpiVisual", visual)
-        self.setMinimumHeight(94)
+        self.setMinimumHeight(72)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 9, 12, 9)
-        layout.setSpacing(3)
+        layout.setContentsMargins(9, 6, 9, 6)
+        layout.setSpacing(2)
 
         self.title_label = QLabel(title)
         self.title_label.setObjectName("kpiTitle")
 
         value_row = QHBoxLayout()
         value_row.setContentsMargins(0, 0, 0, 0)
-        value_row.setSpacing(8)
+        value_row.setSpacing(5)
 
         self.value_label = QLabel("-")
         self.value_label.setObjectName("kpiValue")

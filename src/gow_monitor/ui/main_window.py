@@ -93,7 +93,7 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("GOW Monitor")
         self.resize(1440, 900)
-        self.setMinimumSize(1000, 650)
+        self.setMinimumSize(1280, 760)
 
         self._build_ui()
         self._apply_style()
@@ -186,13 +186,13 @@ class MainWindow(QMainWindow):
         content = QWidget()
         content.setObjectName("content")
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(18, 12, 18, 18)
-        layout.setSpacing(14)
+        layout.setContentsMargins(12, 8, 12, 10)
+        layout.setSpacing(8)
 
         header = QFrame()
         header.setObjectName("header")
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(16, 10, 16, 10)
+        header_layout.setContentsMargins(12, 7, 12, 7)
         header_layout.setSpacing(10)
 
         self.job_label = QLabel("Job: No run selected")
@@ -228,6 +228,7 @@ class MainWindow(QMainWindow):
 
         self.results_root_label = QLabel("No GOW results directory selected")
         self.results_root_label.setObjectName("resultsRoot")
+        self.results_root_label.setMaximumHeight(18)
         self.results_root_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
@@ -249,7 +250,7 @@ class MainWindow(QMainWindow):
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         self.overview_scroll.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         self.overview_scroll.setWidget(self.overview_page)
         self.overview_scroll.viewport().setObjectName(

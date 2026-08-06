@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 
 from gow_monitor.domain import EvaluationPoint, RunSnapshot, RunState
 from gow_monitor.ui.dashboard_metrics import recent_improvement_percent
+from gow_monitor.ui.formatting import format_fixed
 
 
 class _HealthRow(QFrame):
@@ -19,11 +20,11 @@ class _HealthRow(QFrame):
         super().__init__(parent)
         self.setObjectName("healthRow")
         self.setProperty("severity", "info")
-        self.setMaximumHeight(62)
+        self.setMaximumHeight(52)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(9, 7, 9, 7)
-        layout.setSpacing(8)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(6)
 
         text_layout = QVBoxLayout()
         text_layout.setContentsMargins(0, 0, 0, 0)
@@ -63,8 +64,8 @@ class RunHealthPanel(QFrame):
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(11, 10, 11, 10)
-        layout.setSpacing(6)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(4)
 
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
@@ -118,7 +119,10 @@ class RunHealthPanel(QFrame):
         else:
             failure_severity = "warning"
         self.rows["failures"].update_status(
-            f"{failure_rate:.2f}% ({snapshot.failed_evaluations} failed).",
+            (
+                f"{format_fixed(failure_rate, suffix='%')} "
+                f"({snapshot.failed_evaluations} failed)."
+            ),
             failure_severity,
         )
 
@@ -133,7 +137,10 @@ class RunHealthPanel(QFrame):
             )
         elif improvement > 0.0:
             self.rows["progress"].update_status(
-                f"Best improved {improvement:.4g}% in the last 100 evaluations.",
+                (
+                    f"Best improved {format_fixed(improvement, suffix='%')} "
+                    "in the last 100 evaluations."
+                ),
                 "good",
             )
         else:

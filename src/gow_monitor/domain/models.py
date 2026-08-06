@@ -43,14 +43,27 @@ class EvaluationPoint:
     best_so_far: float | None
     mean_so_far: float | None
     median_so_far: float | None
+    generation_id: int | None = None
+    parameters: tuple[tuple[str, float], ...] = ()
 
     def __post_init__(self) -> None:
         if self.evaluation < 1:
             raise ValueError("evaluation must be at least 1")
+        if self.generation_id is not None and self.generation_id < 0:
+            raise ValueError("generation_id cannot be negative")
+        for name, value in self.parameters:
+            if not name:
+                raise ValueError("parameter names cannot be empty")
+            if not isinstance(value, float):
+                raise TypeError("parameter values must be floats")
 
     @property
     def is_valid(self) -> bool:
         return self.status == "ok" and self.objective is not None
+
+    @property
+    def parameter_map(self) -> dict[str, float]:
+        return dict(self.parameters)
 
 
 @dataclass(frozen=True, slots=True)

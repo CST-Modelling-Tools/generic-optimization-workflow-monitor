@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 
@@ -57,19 +57,17 @@ def test_main_window_attaches_requested_gow_pid(qtbot) -> None:
     window.resource_monitor.stop()
 
 
-def test_resources_panel_renders_gow_process_tree(qtbot) -> None:
+def test_resources_panel_renders_only_gow_memory(qtbot) -> None:
     panel = ResourcesPanel()
     qtbot.addWidget(panel)
 
     snapshot = _gow_snapshot()
     panel.render_gow_process(snapshot, (snapshot,))
 
-    assert panel.tiles["gow_cpu"].gauge is not None
-    assert panel.tiles["gow_cpu"].gauge.value == pytest.approx(20.0)
-    assert panel.tiles["gow_memory"].value_label.text() == "512.0 MiB"
-    assert panel.tiles["gow_processes"].value_label.text() == "4"
-    assert panel.tiles["gow_threads"].value_label.text() == "12"
-    assert "PID 43210" in panel.tiles["gow_processes"].detail_label.text()
+    assert panel.tiles["gow_memory"].value_label.text() == "512.0000 MiB"
+    assert "gow_cpu" not in panel.tiles
+    assert "gow_processes" not in panel.tiles
+    assert "gow_threads" not in panel.tiles
 
 
 def test_resources_panel_reports_missing_process_contract(qtbot) -> None:
@@ -82,7 +80,7 @@ def test_resources_panel_reports_missing_process_contract(qtbot) -> None:
     )
     panel.render_gow_process(snapshot)
 
-    assert panel.tiles["gow_cpu"].value_label.text() == "N/A"
+    assert panel.tiles["gow_memory"].value_label.text() == "N/A"
     assert "No GOW process is attached" in (
-        panel.tiles["gow_cpu"].detail_label.text()
+        panel.tiles["gow_memory"].detail_label.text()
     )

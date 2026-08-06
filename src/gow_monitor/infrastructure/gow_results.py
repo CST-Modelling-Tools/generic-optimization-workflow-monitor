@@ -3,6 +3,7 @@ from __future__ import annotations
 import heapq
 import json
 import math
+import re
 import statistics
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -302,6 +303,8 @@ class GowFilesystemRunReader:
                     best_so_far=best_so_far,
                     mean_so_far=mean_so_far,
                     median_so_far=running_median.value,
+                    generation_id=self._generation_id(record),
+                    parameters=self._parameter_items(record),
                 )
             )
 
@@ -417,6 +420,48 @@ class GowFilesystemRunReader:
         if value is None or not str(value).strip():
             return None
         return str(value)
+
+    @staticmethod
+    def _generation_id(payload: dict[str, Any]) -> int | None:
+        raw_generation = payload.get("generation_id")
+        if not isinstance(raw_generation, bool):
+            try:
+                generation = int(raw_generation)
+            except (TypeError, ValueError):
+                generation = -1
+            if generation >= 0:
+                return generation
+
+        for key in ("candidate_local_id", "candidate_id"):
+            value = payload.get(key)
+            if value is None:
+                continue
+            match = re.search(r"(?:^|_)g(\d+)(?:_|$)", str(value))
+            if match is not None:
+                return int(match.group(1))
+        return None
+
+    @staticmethod
+    def _parameter_items(
+        payload: dict[str, Any],
+    ) -> tuple[tuple[str, float], ...]:
+        raw_parameters = payload.get("params")
+        if not isinstance(raw_parameters, dict):
+            return ()
+
+        parameters: list[tuple[str, float]] = []
+        for raw_name, raw_value in raw_parameters.items():
+            if isinstance(raw_value, bool):
+                continue
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(value):
+                continue
+            parameters.append((str(raw_name), value))
+
+        return tuple(sorted(parameters))
 
     @staticmethod
     def _fitness_status(payload: dict[str, Any]) -> str:

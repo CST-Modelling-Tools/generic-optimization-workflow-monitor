@@ -140,10 +140,14 @@ def test_overview_renders_sparklines_and_lower_panels(qtbot) -> None:
         "Over last 100 evaluations"
     )
     assert page.search_behavior_panel.tiles["valid_rate"].value_label.text() == (
-        "100.00%"
+        "100.0000%"
     )
     assert (
-        page.resources_panel.tiles["gow_processes"].value_label.text()
+        page.resources_panel.tiles["gow_memory"].value_label.text()
         == "N/A"
     )
+    assert "gow_cpu" not in page.resources_panel.tiles
+    assert "gpu" not in page.resources_panel.tiles
+    assert "gow_processes" not in page.resources_panel.tiles
+    assert "gow_threads" not in page.resources_panel.tiles
     assert page.resources_panel.tiles["sources"].value_label.text() == "3"

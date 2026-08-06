@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import statistics
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from gow_monitor.domain import EvaluationPoint, ObjectiveDirection
 
@@ -175,3 +176,244 @@ def objective_series(
         if point.is_valid and point.objective is not None
     ]
     return sample_series(values)
+
+@dataclass(frozen=True, slots=True)
+class PopulationDiversityPoint:
+    """Two complementary diversity observations for one generation."""
+
+    generation_id: int
+    evaluation: int
+    spread: float
+    ellipse_area: float
+    population_size: int
+    active_dimensions: int
+
+    @property
+    def diversity(self) -> float:
+        """Backward-compatible alias for the marginal spread metric."""
+
+        return self.spread
+
+
+def population_diversity_series(
+    history: Iterable[EvaluationPoint],
+) -> tuple[PopulationDiversityPoint, ...]:
+    """Calculate population spread and 95% PCA ellipse area by generation.
+
+    Candidate parameters are normalized using the global observed range of the
+    connected run. Constant dimensions are excluded.
+
+    ``spread`` is the sum of marginal sample standard deviations across active
+    normalized dimensions. It measures total axis-aligned population width.
+
+    ``ellipse_area`` is the area of the 95% confidence ellipse defined by the
+    two dominant eigenvalues of the normalized sample covariance matrix. It
+    measures the occupied area in the dominant two-dimensional PCA subspace.
+    """
+
+    points = tuple(
+        point
+        for point in history
+        if point.generation_id is not None and point.parameters
+    )
+    if not points:
+        return ()
+
+    parameter_maps = tuple(point.parameter_map for point in points)
+    common_names = set(parameter_maps[0])
+    for parameter_map in parameter_maps[1:]:
+        common_names.intersection_update(parameter_map)
+    if not common_names:
+        return ()
+
+    ordered_names = tuple(sorted(common_names))
+    minima = {
+        name: min(parameter_map[name] for parameter_map in parameter_maps)
+        for name in ordered_names
+    }
+    maxima = {
+        name: max(parameter_map[name] for parameter_map in parameter_maps)
+        for name in ordered_names
+    }
+    active_names = tuple(
+        name
+        for name in ordered_names
+        if not math.isclose(
+            minima[name],
+            maxima[name],
+            rel_tol=0.0,
+            abs_tol=1e-15,
+        )
+    )
+
+    grouped: dict[int, list[EvaluationPoint]] = {}
+    for point in points:
+        assert point.generation_id is not None
+        grouped.setdefault(point.generation_id, []).append(point)
+
+    observations: list[PopulationDiversityPoint] = []
+    for generation_id in sorted(grouped):
+        generation = grouped[generation_id]
+        evaluation = max(point.evaluation for point in generation)
+        vectors = tuple(
+            tuple(
+                (
+                    point.parameter_map[name] - minima[name]
+                ) / (
+                    maxima[name] - minima[name]
+                )
+                for name in active_names
+            )
+            for point in generation
+        )
+
+        covariance = _sample_covariance(vectors)
+        spread = sum(
+            math.sqrt(max(0.0, covariance[index][index]))
+            for index in range(len(covariance))
+        )
+        ellipse_area = _confidence_ellipse_area(covariance)
+
+        observations.append(
+            PopulationDiversityPoint(
+                generation_id=generation_id,
+                evaluation=evaluation,
+                spread=spread,
+                ellipse_area=ellipse_area,
+                population_size=len(generation),
+                active_dimensions=len(active_names),
+            )
+        )
+
+    return tuple(observations)
+
+
+def _sample_covariance(
+    vectors: tuple[tuple[float, ...], ...],
+) -> tuple[tuple[float, ...], ...]:
+    if len(vectors) < 2 or not vectors or not vectors[0]:
+        return ()
+
+    dimensions = len(vectors[0])
+    means = tuple(
+        statistics.fmean(vector[index] for vector in vectors)
+        for index in range(dimensions)
+    )
+    denominator = len(vectors) - 1
+    return tuple(
+        tuple(
+            sum(
+                (vector[row] - means[row])
+                * (vector[column] - means[column])
+                for vector in vectors
+            ) / denominator
+            for column in range(dimensions)
+        )
+        for row in range(dimensions)
+    )
+
+
+def _confidence_ellipse_area(
+    covariance: tuple[tuple[float, ...], ...],
+) -> float:
+    if len(covariance) < 2:
+        return 0.0
+
+    first_value, first_vector = _dominant_eigenpair(covariance)
+    if first_value <= 0.0 or not first_vector:
+        return 0.0
+
+    second_value, _second_vector = _dominant_eigenpair(
+        covariance,
+        orthogonal_to=(first_vector,),
+    )
+    if second_value <= 0.0:
+        return 0.0
+
+    chi_square_95_df2 = 5.991464547107979
+    return (
+        math.pi
+        * chi_square_95_df2
+        * math.sqrt(first_value * second_value)
+    )
+
+
+def _dominant_eigenpair(
+    matrix: tuple[tuple[float, ...], ...],
+    *,
+    orthogonal_to: tuple[tuple[float, ...], ...] = (),
+) -> tuple[float, tuple[float, ...]]:
+    size = len(matrix)
+    if size == 0:
+        return 0.0, ()
+
+    seed_candidates = (
+        tuple(1.0 / (index + 1.0) for index in range(size)),
+        *tuple(
+            tuple(1.0 if index == basis else 0.0 for index in range(size))
+            for basis in range(size)
+        ),
+    )
+    vector: tuple[float, ...] = ()
+    for candidate in seed_candidates:
+        vector = _normalize_vector(
+            _project_orthogonal(candidate, orthogonal_to)
+        )
+        if vector:
+            break
+    if not vector:
+        return 0.0, ()
+
+    for _iteration in range(96):
+        product = tuple(
+            sum(matrix[row][column] * vector[column] for column in range(size))
+            for row in range(size)
+        )
+        product = _project_orthogonal(product, orthogonal_to)
+        next_vector = _normalize_vector(product)
+        if not next_vector:
+            return 0.0, vector
+
+        same_direction = sum(
+            (next_vector[index] - vector[index]) ** 2
+            for index in range(size)
+        )
+        opposite_direction = sum(
+            (next_vector[index] + vector[index]) ** 2
+            for index in range(size)
+        )
+        vector = next_vector
+        if min(same_direction, opposite_direction) <= 1e-24:
+            break
+
+    product = tuple(
+        sum(matrix[row][column] * vector[column] for column in range(size))
+        for row in range(size)
+    )
+    eigenvalue = sum(
+        vector[index] * product[index]
+        for index in range(size)
+    )
+    return max(0.0, eigenvalue), vector
+
+
+def _project_orthogonal(
+    values: tuple[float, ...],
+    basis_vectors: tuple[tuple[float, ...], ...],
+) -> tuple[float, ...]:
+    projected = list(values)
+    for basis in basis_vectors:
+        coefficient = sum(
+            projected[index] * basis[index]
+            for index in range(len(projected))
+        )
+        for index in range(len(projected)):
+            projected[index] -= coefficient * basis[index]
+    return tuple(projected)
+
+
+def _normalize_vector(values: tuple[float, ...]) -> tuple[float, ...]:
+    norm = math.sqrt(sum(value * value for value in values))
+    if norm <= 1e-15:
+        return ()
+    return tuple(value / norm for value in values)

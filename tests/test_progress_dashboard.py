@@ -116,7 +116,7 @@ def test_overview_renders_compact_progress_dashboard(
 
     assert len(window.current_history) == 2
     assert window.overview_page.cards["best"].value_label.text() == "2"
-    assert window.overview_page.cards["improvement"].value_label.text() == "50%"
+    assert window.overview_page.cards["improvement"].value_label.text() == "50.0000%"
     assert window.overview_page.progress_chart.history == window.current_history
     assert window.overview_page.run_health_panel.summary_label.text() == "HEALTHY"
 

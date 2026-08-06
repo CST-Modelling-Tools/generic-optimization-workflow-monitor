@@ -42,7 +42,7 @@ CV_percent = 100 * sigma / abs(mu)
 Special cases:
 
 - Fewer than two valid objectives: `N/A`.
-- `mu = 0` and `sigma = 0`: `0%`.
+- `mu = 0` and `sigma = 0`: `0.0000%`.
 - `mu = 0` and `sigma > 0`: `N/A`, because the coefficient is undefined.
 
 Interpretation:
@@ -58,34 +58,97 @@ Interpretation:
 The warning color above 100% is a dashboard heuristic, not a universal
 scientific threshold.
 
-## Host resource telemetry
+## Population diversity
 
-CPU and RAM are sampled from the host operating system once per second.
+The diversity panel displays two complementary curves for every observed GOW
+generation. Both are calculated from numeric candidate vectors in the `params`
+field of `result.json` and `results.jsonl`.
 
-Displayed CPU information:
+Every parameter is normalized with the global observed range of the connected
+run. Constant dimensions are excluded:
+
+```text
+z_gij = (x_gij - min_j) / (max_j - min_j)
+```
+
+### spread
+
+`spread` is the sum of the marginal sample standard deviations of all active
+normalized parameters:
+
+```text
+spread_g = sum_j(sample_std(z_g1j, ..., z_gnj))
+```
+
+This reproduces the intuitive width of the population across all parameter
+axes. It can be larger than one because the contributions of multiple active
+dimensions are added.
+
+### ellipse_area
+
+`ellipse_area` describes the occupied area in the two dominant PCA directions.
+The monitor builds the normalized sample covariance matrix and obtains its two
+largest eigenvalues, `lambda_1` and `lambda_2`. The displayed 95% confidence
+ellipse area is:
+
+```text
+ellipse_area_g = pi * chi2_0.95,df=2 * sqrt(lambda_1 * lambda_2)
+```
+
+with:
+
+```text
+chi2_0.95,df=2 = 5.991464547107979
+```
+
+Interpretation:
+
+- Both curves approaching zero indicate population collapse.
+- A decreasing `spread` means the population is narrowing across parameter axes.
+- A decreasing `ellipse_area` means the dominant two-dimensional search region
+  is contracting.
+- One curve can decrease while the other temporarily increases when the search
+  rotates or redistributes variance between dimensions.
+- The metrics are diagnostics. They do not prove convergence or global
+  optimality.
+- Historical values can be rescaled when a later candidate extends a global
+  observed parameter range.
+
+The dotted vertical line marks the latest observed generation. Missing
+parameter vectors are never estimated.
+
+## Numeric display policy
+
+The objective keeps its existing high-precision formatting.
+
+All other decimal values shown in metric cards, status details and the
+diversity chart use fixed-point formatting with at most four decimal places.
+Scientific notation is not used for these non-objective dashboard values.
+
+## Resource telemetry shown in the dashboard
+
+The resources panel intentionally displays only:
 
 - Total host CPU utilization.
-- Logical core count.
-- Physical core count when the operating system exposes it.
-- Number of active logical cores.
-- Per-core utilization history.
+- Total host RAM utilization.
+- Number of active host logical CPU cores.
+- Aggregated GOW resident memory (RSS).
+- Number of distinct result artifact sources.
+
+The following cards are intentionally omitted from the dashboard:
+
+- GPU utilization.
+- GOW CPU utilization.
+- GOW process-tree count.
+- GOW thread count.
+
+The process-tree reader remains an internal implementation detail because
+aggregating GOW RAM across child processes still requires process discovery.
+The hidden process, thread and CPU values are not presented to the operator.
+
+CPU and RAM are sampled from the host operating system once per second.
 
 A logical core is counted as active when its sampled utilization is at least
 5%. This threshold is a display convention and can be made configurable later.
 
-Displayed RAM information:
-
-- Percentage of host physical memory in use.
-- Used bytes.
-- Total bytes.
-
-GPU telemetry is adapter-based:
-
-- NVIDIA GPUs are queried through `nvidia-smi` when it is available.
-- The application remains functional when no supported GPU backend is present.
-- AMD and Apple GPU adapters can be added without changing the dashboard
-  contract.
-- `N/A` is displayed rather than estimating unavailable data.
-
-The current values are host-level measurements. Exact attribution to one GOW
-process requires an explicit PID or scheduler/process contract.
+`N/A` is displayed rather than estimating unavailable data.
