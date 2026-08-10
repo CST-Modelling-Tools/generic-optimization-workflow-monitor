@@ -163,3 +163,31 @@ A logical core is counted as active when its sampled utilization is at least
 5%. This threshold is a display convention and can be made configurable later.
 
 `N/A` is displayed rather than estimating unavailable data.
+
+## Resource telemetry reliability
+
+Host telemetry and GOW process telemetry are sampled by independent background
+workers. A slow or unavailable GOW process-tree read therefore cannot freeze
+host CPU/RAM/core updates.
+
+The fast host path intentionally disables GPU discovery because the current
+Resources panel does not display GPU metrics and platform GPU probes can block
+otherwise cheap host RAM/CPU sampling on some Windows systems.
+
+When `--gow-pid` is not supplied, the monitor can automatically discover an
+active GOW launcher by matching the selected results root and, when available,
+the selected run id against active GOW command lines. Ambiguous outdir-only
+matches are rejected rather than attributing RAM to the wrong process.
+
+Host RAM and GOW RAM cards include the latest sampling clock time. A stable RAM
+percentage with an advancing sample time means that memory use is genuinely
+stable, not that telemetry is frozen.
+
+`Artifact sources` is a count of result files/generation shards feeding the
+reader. It is not an evaluation counter and normally increments when a
+generation shard becomes available.
+
+For load validation, `scripts/run_resource_stress_smoke.py` creates a
+GOW-compatible large campaign, generates controlled RAM changes, launches the
+monitor, samples Host RAM and GOW RSS independently, tracks artifact-shard
+growth, and verifies the final evaluation count.

@@ -676,6 +676,7 @@ class GowFilesystemRunReader:
         shard_paths: tuple[Path, ...],
     ) -> _CachedShardRun:
         metadata_path = run.run_root / "summary.json"
+        final_results_path = run.run_root / "results.jsonl"
         fingerprint_items: list[tuple[str, int, int]] = []
 
         for path in shard_paths:
@@ -687,19 +688,20 @@ class GowFilesystemRunReader:
                 (str(path), stat.st_size, stat.st_mtime_ns)
             )
 
-        if metadata_path.is_file():
+        for path in (metadata_path, final_results_path):
+            if not path.is_file():
+                continue
             try:
-                stat = metadata_path.stat()
+                stat = path.stat()
             except OSError:
-                pass
-            else:
-                fingerprint_items.append(
-                    (
-                        str(metadata_path),
-                        stat.st_size,
-                        stat.st_mtime_ns,
-                    )
+                continue
+            fingerprint_items.append(
+                (
+                    str(path),
+                    stat.st_size,
+                    stat.st_mtime_ns,
                 )
+            )
 
         fingerprint = tuple(fingerprint_items)
         cache_key = run.run_root.resolve()

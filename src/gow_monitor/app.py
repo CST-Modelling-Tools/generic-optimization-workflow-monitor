@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import sys
@@ -66,20 +66,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     application.setStyle("Fusion")
 
     window = MainWindow(gow_pid=arguments.gow_pid)
+    window.show()
 
     if arguments.results_root is not None:
         results_root = arguments.results_root.expanduser()
         try:
             results_root.mkdir(parents=True, exist_ok=True)
-            window.connect_results_root(results_root)
+            window.connect_results_root_async(results_root)
         except OSError as exc:
+            window.close()
             print(
                 f"Unable to connect GOW results directory: {exc}",
                 file=sys.stderr,
             )
             return 2
-
-    window.show()
 
     if not owns_application:
         return 0

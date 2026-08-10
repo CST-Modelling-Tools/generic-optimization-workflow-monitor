@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import datetime
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QResizeEvent
@@ -364,7 +365,10 @@ class ResourcesPanel(_MetricPanel):
     def render(self, snapshot: RunSnapshot) -> None:
         self.tiles["sources"].set_metric(
             str(snapshot.result_sources),
-            detail="Distinct result artifact sources currently observed",
+            detail=(
+                "Generation/result files feeding the monitor; "
+                "increments when a new shard becomes available"
+            ),
             tone="good" if snapshot.result_sources else "warning",
         )
 
@@ -396,11 +400,15 @@ class ResourcesPanel(_MetricPanel):
             series=cpu_series,
             gauge_value=snapshot.cpu_percent,
         )
+        sampled_at = datetime.fromtimestamp(
+            snapshot.captured_at
+        ).strftime("%H:%M:%S")
         self.tiles["memory"].set_metric(
             format_fixed(snapshot.memory_percent, suffix="%"),
             detail=(
                 f"{self._format_bytes(snapshot.memory_used_bytes)} / "
-                f"{self._format_bytes(snapshot.memory_total_bytes)}"
+                f"{self._format_bytes(snapshot.memory_total_bytes)} "
+                f"| sample {sampled_at}"
             ),
             tone=self._utilization_tone(snapshot.memory_percent),
             series=memory_series,
@@ -450,9 +458,16 @@ class ResourcesPanel(_MetricPanel):
         )
         root_name = snapshot.root_name or "unknown process"
 
+        sampled_at = datetime.fromtimestamp(
+            snapshot.captured_at
+        ).strftime("%H:%M:%S")
         self.tiles["gow_memory"].set_metric(
             self._format_bytes(snapshot.memory_rss_bytes),
-            detail=f"Aggregated resident memory for {root_name}",
+            detail=(
+                f"Aggregated RSS for {root_name} "
+                f"| PID {snapshot.root_pid} "
+                f"| sample {sampled_at}"
+            ),
             tone="neutral",
             series=memory_series,
         )

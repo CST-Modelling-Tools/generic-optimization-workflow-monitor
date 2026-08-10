@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from gow_monitor.domain import RunState
 from gow_monitor.infrastructure import GowFilesystemRunReader
 from gow_monitor.ui.pages import OverviewPage
 
@@ -203,3 +204,50 @@ def test_overview_shows_completed_and_planned_evaluations(qtbot) -> None:
     assert "4.00% completed" in (
         page.cards["evaluations"].detail_label.text()
     )
+
+def test_results_jsonl_creation_invalidates_cached_running_snapshot(
+    tmp_path: Path,
+) -> None:
+    results_root = tmp_path / "results"
+    run_root = results_root / "runs" / "run-cache-completion"
+    generation_root = run_root / "generations"
+    generation_root.mkdir(parents=True)
+
+    shard_payload = {
+        "candidate_id": "run-cache-completion_g000000_c000000",
+        "generation_id": 0,
+        "started_at": 1000.0,
+        "finished_at": 1005.0,
+        "fitness": {
+            "status": "ok",
+            "objective": 1.0,
+        },
+        "params": {
+            "x": 0.5,
+        },
+    }
+
+    shard_path = generation_root / "g000000.jsonl"
+    shard_path.write_text(
+        json.dumps(shard_payload) + "\n",
+        encoding="utf-8",
+    )
+
+    reader = GowFilesystemRunReader(results_root)
+    reference = reader.discover_runs()[0]
+
+    first_snapshot = reader.snapshot_of(reference)
+    assert first_snapshot.state is RunState.RUNNING
+    assert first_snapshot.run_finished_at == 1005.0
+
+    final_results = run_root / "results.jsonl"
+    final_results.write_text(
+        json.dumps(shard_payload) + "\n",
+        encoding="utf-8",
+    )
+
+    second_snapshot = reader.snapshot_of(reference)
+
+    assert second_snapshot.state is RunState.COMPLETED
+    assert second_snapshot.run_finished_at == 1005.0
+    assert second_snapshot.evaluation_count == 1

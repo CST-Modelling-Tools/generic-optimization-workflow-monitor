@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from decimal import Decimal
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QResizeEvent
@@ -57,6 +58,8 @@ class OverviewPage(QWidget):
         self.setObjectName("page")
         self._snapshot: RunSnapshot | None = None
         self._history: tuple[EvaluationPoint, ...] = ()
+        self._runtime_completion_times: dict[str, float] = {}
+        self._evaluation_detail_base = ""
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -86,7 +89,6 @@ class OverviewPage(QWidget):
             "best": KpiCard("Best objective"),
             "evaluations": KpiCard("Evaluations"),
             "elapsed": KpiCard("Run time"),
-            "throughput": KpiCard("Evaluations / min"),
             "improvement": KpiCard("Improvement rate"),
             "success": KpiCard("Success rate", visual="gauge"),
             "failures": KpiCard("Failure rate", visual="gauge"),
@@ -242,7 +244,14 @@ class OverviewPage(QWidget):
     def _format_objective(value: float | None) -> str:
         if value is None:
             return "-"
-        return f"{value:.12g}"
+        decimal_value = Decimal(str(value))
+        if decimal_value == 0:
+            return "0"
+
+        decimal_text = format(decimal_value, "f")
+        if "." in decimal_text:
+            decimal_text = decimal_text.rstrip("0").rstrip(".")
+        return decimal_text
 
     def render_snapshot(
         self,
@@ -252,6 +261,7 @@ class OverviewPage(QWidget):
         self._snapshot = snapshot
         self._history = history
         reference = snapshot.reference
+        self._capture_runtime_completion(snapshot)
 
         improvement = recent_improvement_percent(
             history,
@@ -291,6 +301,7 @@ class OverviewPage(QWidget):
                 f"{snapshot.result_sources} distinct source(s)"
             )
 
+        self._evaluation_detail_base = evaluation_detail
         self.cards["evaluations"].set_value(
             evaluation_value,
             detail=evaluation_detail,
@@ -351,19 +362,14 @@ class OverviewPage(QWidget):
                 "N/A",
                 detail="Timing data unavailable",
             )
-            self.cards["throughput"].set_value(
-                "N/A",
-                detail="Timing data unavailable",
+            self._render_evaluation_rate(
+                throughput=None,
+                terminal=False,
             )
             return
 
-        terminal = snapshot.state in self._TERMINAL_STATES
+        terminal = self._runtime_is_final(snapshot)
         elapsed_detail = "Final duration" if terminal else "Running"
-        throughput_detail = (
-            "Final average"
-            if terminal
-            else "Average since run start"
-        )
         throughput = (
             snapshot.evaluation_count * 60.0 / elapsed
             if elapsed >= 1.0
@@ -375,29 +381,88 @@ class OverviewPage(QWidget):
             detail=elapsed_detail,
             tone="good" if terminal else "neutral",
         )
-        self.cards["throughput"].set_value(
-            (
-                format_fixed(
-                    throughput,
-                    suffix=" eval/min",
-                )
-                if throughput is not None
-                else "N/A"
-            ),
-            detail=throughput_detail,
-            tone="good" if throughput is not None else "neutral",
+        self._render_evaluation_rate(
+            throughput=throughput,
+            terminal=terminal,
         )
 
-    @classmethod
+    def _render_evaluation_rate(
+        self,
+        *,
+        throughput: float | None,
+        terminal: bool,
+    ) -> None:
+        if throughput is None:
+            rate_text = "N/A eval/min"
+        else:
+            rate_text = format_fixed(
+                throughput,
+                suffix=" eval/min",
+            )
+
+        context = "final avg" if terminal else "live avg"
+        secondary_line = f"{rate_text} | {context}"
+
+        if self._evaluation_detail_base:
+            detail = (
+                f"{secondary_line}\n"
+                f"{self._evaluation_detail_base}"
+            )
+        else:
+            detail = secondary_line
+
+        self.cards["evaluations"].detail_label.setText(detail)
+
+    @staticmethod
+    def _evaluation_target_reached(snapshot: RunSnapshot) -> bool:
+        planned = snapshot.planned_evaluations
+        return (
+            planned is not None
+            and planned > 0
+            and snapshot.evaluation_count >= planned
+        )
+
+    def _capture_runtime_completion(
+        self,
+        snapshot: RunSnapshot,
+    ) -> None:
+        if not self._evaluation_target_reached(snapshot):
+            return
+
+        run_id = snapshot.reference.run_id
+        if run_id in self._runtime_completion_times:
+            return
+
+        finished_at = snapshot.run_finished_at
+        stop_time = (
+            finished_at
+            if finished_at is not None
+            else time.time()
+        )
+        self._runtime_completion_times[run_id] = stop_time
+
+    def _runtime_is_final(
+        self,
+        snapshot: RunSnapshot,
+    ) -> bool:
+        if self._evaluation_target_reached(snapshot):
+            return True
+        return snapshot.state in self._TERMINAL_STATES
+
     def _elapsed_seconds(
-        cls,
+        self,
         snapshot: RunSnapshot,
     ) -> float | None:
         started_at = snapshot.run_started_at
         if started_at is None:
             return None
 
-        if snapshot.state in cls._TERMINAL_STATES:
+        self._capture_runtime_completion(snapshot)
+        run_id = snapshot.reference.run_id
+
+        if self._evaluation_target_reached(snapshot):
+            end_time = self._runtime_completion_times[run_id]
+        elif snapshot.state in self._TERMINAL_STATES:
             finished_at = snapshot.run_finished_at
             if finished_at is None:
                 return None
@@ -440,6 +505,7 @@ class OverviewPage(QWidget):
     def clear(self, message: str = "No GOW run connected") -> None:
         self._snapshot = None
         self._history = ()
+        self._evaluation_detail_base = ""
         for card in self.cards.values():
             card.set_value("-", detail="Waiting for GOW artifacts")
         self.progress_chart.set_history((), ObjectiveDirection.UNKNOWN)

@@ -116,12 +116,12 @@ def test_completed_run_shows_final_duration_and_average_rate(
     page.render_snapshot(snapshot, ())
 
     assert page.cards["elapsed"].value_label.text() == "00:02:00"
-    assert page.cards["throughput"].value_label.text() == (
-        "120.00 eval/min"
-    )
+    assert "throughput" not in page.cards
     assert page.cards["elapsed"].detail_label.text() == "Final duration"
-    assert page.cards["throughput"].detail_label.text() == "Final average"
-    assert page.cards["best"].value_label.text() == "1.23456789012"
+    assert page.cards["evaluations"].detail_label.text() == (
+        "120.00 eval/min | final avg\n1 distinct source(s)"
+    )
+    assert page.cards["best"].value_label.text() == "1.234567890123"
     page.runtime_timer.stop()
 
 
@@ -152,11 +152,172 @@ def test_running_timer_uses_current_time(
     page.render_snapshot(snapshot, ())
 
     assert page.cards["elapsed"].value_label.text() == "00:01:00"
-    assert page.cards["throughput"].value_label.text() == (
-        "120.00 eval/min"
-    )
+    assert "throughput" not in page.cards
     assert page.cards["elapsed"].detail_label.text() == "Running"
-    assert page.cards["throughput"].detail_label.text() == (
-        "Average since run start"
+    assert page.cards["evaluations"].detail_label.text() == (
+        "120.00 eval/min | live avg\n1 distinct source(s)"
     )
+    page.runtime_timer.stop()
+
+
+def test_best_objective_never_uses_scientific_notation(qtbot) -> None:
+    page = OverviewPage()
+    qtbot.addWidget(page)
+    snapshot = RunSnapshot(
+        reference=RunReference(
+            run_id="small-objective",
+            run_root=Path("results/runs/small-objective"),
+            direction=ObjectiveDirection.MINIMIZE,
+        ),
+        state=RunState.COMPLETED,
+        evaluation_count=1,
+        failed_evaluations=0,
+        result_sources=1,
+        successful_evaluations=1,
+        best_objective=6.4e-05,
+        run_started_at=1_000.0,
+        run_finished_at=1_001.0,
+    )
+
+    page.render_snapshot(snapshot, ())
+
+    objective_text = page.cards["best"].value_label.text()
+    assert objective_text == "0.000064"
+    assert "e" not in objective_text.lower()
+    page.runtime_timer.stop()
+
+def test_runtime_freezes_when_planned_evaluations_are_reached(
+    qtbot,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "gow_monitor.ui.pages.overview_page.time.time",
+        lambda: 1_900.0,
+    )
+
+    page = OverviewPage()
+    qtbot.addWidget(page)
+
+    snapshot = RunSnapshot(
+        reference=RunReference(
+            run_id="target-reached",
+            run_root=Path("results/runs/target-reached"),
+            direction=ObjectiveDirection.MINIMIZE,
+        ),
+        state=RunState.RUNNING,
+        evaluation_count=100,
+        failed_evaluations=0,
+        result_sources=4,
+        successful_evaluations=100,
+        planned_evaluations=100,
+        run_started_at=1_000.0,
+        run_finished_at=1_120.0,
+    )
+
+    page.render_snapshot(snapshot, ())
+
+    assert page.cards["elapsed"].value_label.text() == "00:02:00"
+    assert page.cards["elapsed"].detail_label.text() == "Final duration"
+    assert page.cards["evaluations"].detail_label.text() == (
+        "50.00 eval/min | final avg\n"
+        "100.00% completed | 4 source(s)"
+    )
+
+    monkeypatch.setattr(
+        "gow_monitor.ui.pages.overview_page.time.time",
+        lambda: 9_999.0,
+    )
+    page._refresh_runtime_cards()
+
+    assert page.cards["elapsed"].value_label.text() == "00:02:00"
+    assert page.cards["elapsed"].detail_label.text() == "Final duration"
+    assert page.cards["evaluations"].detail_label.text() == (
+        "50.00 eval/min | final avg\n"
+        "100.00% completed | 4 source(s)"
+    )
+
+    page.runtime_timer.stop()
+
+def test_runtime_hard_stops_at_planned_evaluations_without_finished_at(
+    qtbot,
+    monkeypatch,
+) -> None:
+    current_time = {"value": 1_120.0}
+    monkeypatch.setattr(
+        "gow_monitor.ui.pages.overview_page.time.time",
+        lambda: current_time["value"],
+    )
+
+    page = OverviewPage()
+    qtbot.addWidget(page)
+
+    snapshot = RunSnapshot(
+        reference=RunReference(
+            run_id="hard-stop-at-target",
+            run_root=Path("results/runs/hard-stop-at-target"),
+            direction=ObjectiveDirection.MINIMIZE,
+        ),
+        state=RunState.RUNNING,
+        evaluation_count=100,
+        failed_evaluations=0,
+        result_sources=4,
+        successful_evaluations=100,
+        planned_evaluations=100,
+        run_started_at=1_000.0,
+        run_finished_at=None,
+    )
+
+    page.render_snapshot(snapshot, ())
+
+    assert page.cards["elapsed"].value_label.text() == "00:02:00"
+    assert page.cards["elapsed"].detail_label.text() == "Final duration"
+
+    current_time["value"] = 9_999.0
+    page._refresh_runtime_cards()
+
+    assert page.cards["elapsed"].value_label.text() == "00:02:00"
+    assert page.cards["elapsed"].detail_label.text() == "Final duration"
+
+    page.runtime_timer.stop()
+
+
+def test_runtime_keeps_running_one_evaluation_before_target(
+    qtbot,
+    monkeypatch,
+) -> None:
+    current_time = {"value": 1_120.0}
+    monkeypatch.setattr(
+        "gow_monitor.ui.pages.overview_page.time.time",
+        lambda: current_time["value"],
+    )
+
+    page = OverviewPage()
+    qtbot.addWidget(page)
+
+    snapshot = RunSnapshot(
+        reference=RunReference(
+            run_id="one-before-target",
+            run_root=Path("results/runs/one-before-target"),
+            direction=ObjectiveDirection.MINIMIZE,
+        ),
+        state=RunState.RUNNING,
+        evaluation_count=99,
+        failed_evaluations=0,
+        result_sources=4,
+        successful_evaluations=99,
+        planned_evaluations=100,
+        run_started_at=1_000.0,
+        run_finished_at=None,
+    )
+
+    page.render_snapshot(snapshot, ())
+    assert page.cards["elapsed"].value_label.text() == "00:02:00"
+    assert page.cards["elapsed"].detail_label.text() == "Running"
+
+    current_time["value"] = 1_130.0
+    page._refresh_runtime_cards()
+
+    assert page.cards["elapsed"].value_label.text() == "00:02:10"
+    assert page.cards["elapsed"].detail_label.text() == "Running"
+
     page.runtime_timer.stop()

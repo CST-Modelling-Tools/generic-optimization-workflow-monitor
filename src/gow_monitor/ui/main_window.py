@@ -329,6 +329,46 @@ class MainWindow(QMainWindow):
             "GOW artifacts are refreshed every second in a background worker.",
         )
 
+    def connect_results_root_async(
+        self,
+        results_root: str | Path,
+    ) -> None:
+        # Dedicated non-blocking path used only by CLI startup.
+        selected_path = Path(results_root).expanduser().resolve()
+        if not selected_path.exists():
+            raise FileNotFoundError(
+                f"The selected path does not exist: {selected_path}"
+            )
+        if not selected_path.is_dir():
+            raise NotADirectoryError(
+                f"The selected path is not a directory: {selected_path}"
+            )
+
+        self._reader = None
+        self._snapshots = ()
+        self._histories = {}
+        self._connected_path = selected_path
+
+        self.run_selector.blockSignals(True)
+        self.run_selector.clear()
+        self.run_selector.blockSignals(False)
+        self.run_selector.setEnabled(False)
+
+        self.results_root_label.setText(str(selected_path))
+        self.results_root_label.setToolTip(str(selected_path))
+        self._render_no_run(
+            "Loading GOW artifacts in the background. "
+            "Live resource telemetry remains available."
+        )
+
+        self.live_refresh.connect_path(selected_path)
+        self._set_refresh_status(
+            "SYNC",
+            "busy",
+            "Initial GOW artifact discovery is running in a background worker.",
+        )
+        self.live_refresh.refresh_now()
+
     def refresh_connected_results(self) -> bool:
         """Request an immediate refresh without changing the selected folder."""
 
@@ -487,6 +527,11 @@ class MainWindow(QMainWindow):
         )
 
         history = self._histories.get(reference.run_id, ())
+        if self._reader is not None:
+            self.resource_monitor.watch_gow_run(
+                results_root=self._reader.results_root,
+                run_id=reference.run_id,
+            )
         self.overview_page.render_snapshot(snapshot, history)
 
         for key in self.placeholder_labels:

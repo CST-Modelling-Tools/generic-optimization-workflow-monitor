@@ -1,7 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import psutil
@@ -268,3 +269,119 @@ class GowProcessTreeReader:
             return None
 
         return name or None
+
+
+def discover_gow_process_pid(
+    *,
+    results_root: str | Path,
+    run_id: str | None = None,
+    psutil_module: Any = psutil,
+    exclude_pids: tuple[int, ...] = (),
+) -> int | None:
+    """Find the active GOW launcher responsible for a monitored result root.
+
+    A run-id match is authoritative. If the run id is not present in the
+    command line, an outdir-only match is accepted only when it is unambiguous.
+    """
+
+    process_iter = getattr(psutil_module, "process_iter", None)
+    if process_iter is None:
+        return None
+
+    root_key = (
+        str(Path(results_root).expanduser().resolve())
+        .replace("\\", "/")
+        .casefold()
+    )
+    run_key = str(run_id or "").strip().casefold()
+    excluded = set(exclude_pids)
+
+    run_matches: list[tuple[float, int]] = []
+    root_matches: list[tuple[float, int]] = []
+
+    try:
+        processes = process_iter(
+            attrs=("pid", "name", "cmdline", "create_time")
+        )
+    except (TypeError, OSError):
+        try:
+            processes = process_iter()
+        except Exception:
+            return None
+
+    for process in processes:
+        try:
+            info = getattr(process, "info", {}) or {}
+            pid = int(info.get("pid", getattr(process, "pid", 0)))
+        except (TypeError, ValueError, AttributeError):
+            continue
+
+        if pid < 1 or pid in excluded:
+            continue
+
+        raw_name = info.get("name")
+        if raw_name is None:
+            try:
+                raw_name = process.name()
+            except Exception:
+                raw_name = ""
+
+        raw_cmdline = info.get("cmdline")
+        if raw_cmdline is None:
+            try:
+                raw_cmdline = process.cmdline()
+            except Exception:
+                raw_cmdline = ()
+
+        if isinstance(raw_cmdline, str):
+            tokens = (raw_cmdline,)
+        else:
+            try:
+                tokens = tuple(str(item) for item in raw_cmdline or ())
+            except TypeError:
+                tokens = ()
+
+        name = str(raw_name or "").strip().casefold()
+        token_names = {
+            Path(token.strip('"')).name.casefold()
+            for token in tokens
+            if token.strip()
+        }
+        module_launch = any(
+            tokens[index].casefold() == "-m"
+            and tokens[index + 1].casefold() == "gow"
+            for index in range(max(0, len(tokens) - 1))
+        )
+        is_gow_launcher = (
+            name in {"gow", "gow.exe"}
+            or bool(token_names & {"gow", "gow.exe"})
+            or module_launch
+        )
+        if not is_gow_launcher:
+            continue
+
+        command = " ".join(tokens).replace("\\", "/").casefold()
+        root_match = bool(root_key and root_key in command)
+        run_match = bool(run_key and run_key in command)
+
+        if not root_match and not run_match:
+            continue
+
+        created_raw = info.get("create_time", 0.0)
+        try:
+            created_at = float(created_raw or 0.0)
+        except (TypeError, ValueError):
+            created_at = 0.0
+
+        if run_match:
+            run_matches.append((created_at, pid))
+        elif root_match:
+            root_matches.append((created_at, pid))
+
+    if run_matches:
+        return max(run_matches)[1]
+
+    if len(root_matches) == 1:
+        return root_matches[0][1]
+
+    return None
