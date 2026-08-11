@@ -20,11 +20,11 @@ class _HealthRow(QFrame):
         super().__init__(parent)
         self.setObjectName("healthRow")
         self.setProperty("severity", "info")
-        self.setMaximumHeight(52)
+        self.setMaximumHeight(45)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 4, 8, 4)
-        layout.setSpacing(6)
+        layout.setContentsMargins(7, 3, 7, 3)
+        layout.setSpacing(5)
 
         text_layout = QVBoxLayout()
         text_layout.setContentsMargins(0, 0, 0, 0)
@@ -39,7 +39,7 @@ class _HealthRow(QFrame):
         self.severity_label = QLabel("INFO")
         self.severity_label.setObjectName("healthSeverity")
         self.severity_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.severity_label.setMinimumWidth(58)
+        self.severity_label.setMinimumWidth(52)
 
         text_layout.addWidget(self.title_label)
         text_layout.addWidget(self.detail_label)
@@ -61,11 +61,11 @@ class RunHealthPanel(QFrame):
         super().__init__(parent)
         self.setObjectName("runHealthPanel")
         self.setMinimumWidth(300)
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(4)
+        layout.setContentsMargins(7, 5, 7, 5)
+        layout.setSpacing(3)
 
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)

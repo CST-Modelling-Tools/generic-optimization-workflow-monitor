@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -40,6 +41,7 @@ from gow_monitor.ui.widgets import (
     RunHealthPanel,
     SearchBehaviorPanel,
 )
+from gow_monitor.ui.widgets.chart_dialog import ChartDialog
 
 
 class OverviewPage(QWidget):
@@ -60,10 +62,14 @@ class OverviewPage(QWidget):
         self._history: tuple[EvaluationPoint, ...] = ()
         self._runtime_completion_times: dict[str, float] = {}
         self._evaluation_detail_base = ""
+        self._progress_dialog: ChartDialog | None = None
+        self._diversity_dialog: ChartDialog | None = None
+        self._expanded_progress_chart: ObjectiveProgressChart | None = None
+        self._expanded_diversity_chart: PopulationDiversityChart | None = None
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(6)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(5)
 
         heading_row = QHBoxLayout()
         heading_row.setContentsMargins(0, 0, 0, 0)
@@ -76,7 +82,7 @@ class OverviewPage(QWidget):
         )
         description.setObjectName("description")
         description.setWordWrap(True)
-        description.setMaximumHeight(32)
+        description.setMaximumHeight(24)
 
         heading_row.addWidget(self.title_label)
         heading_row.addWidget(description, 1)
@@ -96,18 +102,21 @@ class OverviewPage(QWidget):
         for card in self.cards.values():
             cards_layout.addWidget(card, 1)
 
-        dashboard_layout = QHBoxLayout()
-        dashboard_layout.setContentsMargins(0, 0, 0, 0)
-        dashboard_layout.setSpacing(6)
+        self.dashboard_layout = QGridLayout()
+        self.dashboard_layout.setContentsMargins(0, 0, 0, 0)
+        self.dashboard_layout.setHorizontalSpacing(6)
+        self.dashboard_layout.setVerticalSpacing(6)
 
-        progress_panel = QFrame()
-        progress_panel.setObjectName("dashboardPanel")
-        progress_layout = QVBoxLayout(progress_panel)
-        progress_layout.setContentsMargins(8, 6, 8, 6)
-        progress_layout.setSpacing(4)
+        self.progress_panel = QFrame()
+        self.progress_panel.setObjectName("dashboardPanel")
+        progress_layout = QVBoxLayout(self.progress_panel)
+        progress_layout.setContentsMargins(7, 5, 7, 5)
+        progress_layout.setSpacing(3)
 
         progress_header = QHBoxLayout()
         progress_header.setContentsMargins(0, 0, 0, 0)
+        progress_header.setSpacing(6)
+
         progress_title = QLabel("Optimization progress")
         progress_title.setObjectName("panelTitle")
 
@@ -120,18 +129,27 @@ class OverviewPage(QWidget):
             self._window_selection_changed
         )
 
+        self.expand_progress_button = QPushButton("Expand")
+        self.expand_progress_button.setObjectName("chartActionButton")
+        self.expand_progress_button.setToolTip(
+            "Open Optimization progress in a large live window"
+        )
+        self.expand_progress_button.clicked.connect(
+            self._open_progress_chart
+        )
+
         progress_header.addWidget(progress_title)
         progress_header.addStretch(1)
         progress_header.addWidget(self.window_selector)
+        progress_header.addWidget(self.expand_progress_button)
 
         self.progress_chart = ObjectiveProgressChart()
-        self.diversity_title = QLabel("Diversity")
-        self.diversity_title.setObjectName("panelTitle")
-        self.diversity_chart = PopulationDiversityChart()
+
         self.chart_meta_bar = QFrame()
         self.chart_meta_bar.setObjectName("chartMetaBar")
         chart_meta_layout = QHBoxLayout(self.chart_meta_bar)
-        chart_meta_layout.setContentsMargins(8, 4, 8, 4)
+        chart_meta_layout.setContentsMargins(7, 3, 7, 3)
+
         self.chart_footer = QLabel("No GOW run connected")
         self.chart_footer.setObjectName("chartFooter")
         self.chart_footer.setTextInteractionFlags(
@@ -141,19 +159,60 @@ class OverviewPage(QWidget):
         chart_meta_layout.addWidget(self.chart_footer)
 
         progress_layout.addLayout(progress_header)
-        progress_layout.addWidget(self.progress_chart, 3)
-        progress_layout.addWidget(self.diversity_title)
-        progress_layout.addWidget(self.diversity_chart, 2)
+        progress_layout.addWidget(self.progress_chart, 1)
         progress_layout.addWidget(self.chart_meta_bar)
 
         self.run_health_panel = RunHealthPanel()
 
-        dashboard_layout.addWidget(progress_panel, 3)
-        dashboard_layout.addWidget(
-            self.run_health_panel,
-            1,
-            Qt.AlignmentFlag.AlignTop,
+        self.diversity_panel = QFrame()
+        self.diversity_panel.setObjectName("dashboardPanel")
+        diversity_layout = QVBoxLayout(self.diversity_panel)
+        diversity_layout.setContentsMargins(7, 5, 7, 5)
+        diversity_layout.setSpacing(3)
+
+        diversity_header = QHBoxLayout()
+        diversity_header.setContentsMargins(0, 0, 0, 0)
+        diversity_header.setSpacing(6)
+
+        self.diversity_title = QLabel("Population diversity")
+        self.diversity_title.setObjectName("panelTitle")
+
+        self.diversity_meta_label = QLabel("Awaiting population data")
+        self.diversity_meta_label.setObjectName("panelMeta")
+
+        self.expand_diversity_button = QPushButton("Expand")
+        self.expand_diversity_button.setObjectName("chartActionButton")
+        self.expand_diversity_button.setToolTip(
+            "Open Population diversity in a large live window"
         )
+        self.expand_diversity_button.clicked.connect(
+            self._open_diversity_chart
+        )
+
+        diversity_header.addWidget(self.diversity_title)
+        diversity_header.addStretch(1)
+        diversity_header.addWidget(self.diversity_meta_label)
+        diversity_header.addWidget(self.expand_diversity_button)
+
+        self.diversity_chart = PopulationDiversityChart()
+
+        diversity_layout.addLayout(diversity_header)
+        diversity_layout.addWidget(self.diversity_chart, 1)
+
+        self.dashboard_layout.addWidget(
+            self.progress_panel, 0, 0, 2, 1
+        )
+        self.dashboard_layout.addWidget(
+            self.run_health_panel, 0, 1
+        )
+        self.dashboard_layout.addWidget(
+            self.diversity_panel, 1, 1
+        )
+
+        self.dashboard_layout.setColumnStretch(0, 7)
+        self.dashboard_layout.setColumnStretch(1, 3)
+        self.dashboard_layout.setRowStretch(0, 1)
+        self.dashboard_layout.setRowStretch(1, 1)
 
         self.lower_layout = QGridLayout()
         self.lower_layout.setContentsMargins(0, 0, 0, 0)
@@ -161,14 +220,18 @@ class OverviewPage(QWidget):
         self.lower_layout.setVerticalSpacing(6)
 
         self.search_behavior_panel = SearchBehaviorPanel()
-        self.resources_panel = ResourcesPanel()
+        self.resources_panel = ResourcesPanel(
+            preferred_columns=5,
+            compact_breakpoint_px=700,
+            single_breakpoint_px=360,
+        )
         self._lower_panels_stacked: bool | None = None
         self._reflow_lower_panels(stacked=False)
 
         layout.addLayout(heading_row)
         layout.addLayout(cards_layout)
-        layout.addLayout(dashboard_layout, 3)
-        layout.addLayout(self.lower_layout, 2)
+        layout.addLayout(self.dashboard_layout, 1)
+        layout.addLayout(self.lower_layout)
 
         self.runtime_timer = QTimer(self)
         self.runtime_timer.setInterval(1000)
@@ -339,6 +402,8 @@ class OverviewPage(QWidget):
             snapshot.population_diversity
         )
         self.diversity_chart.set_history(history)
+        self._update_diversity_meta(snapshot)
+        self._sync_expanded_charts()
         self.run_health_panel.render(snapshot, history)
         self.search_behavior_panel.render(snapshot, history)
         self.resources_panel.render(snapshot)
@@ -482,6 +547,114 @@ class OverviewPage(QWidget):
         clock = f"{hours:02d}:{minutes:02d}:{seconds_part:02d}"
         return f"{days}d {clock}" if days else clock
 
+    def _selected_window_size(self) -> int | None:
+        value = self.window_selector.currentData()
+        return int(value) if value is not None else None
+
+    def _update_diversity_meta(
+        self,
+        snapshot: RunSnapshot,
+    ) -> None:
+        samples = snapshot.population_diversity
+        if not samples:
+            self.diversity_meta_label.setText(
+                "Awaiting population data"
+            )
+            return
+
+        latest = samples[-1]
+        self.diversity_meta_label.setText(
+            f"Gen {latest.generation_id} | "
+            f"Pop {latest.population_size} | "
+            f"Dims {latest.active_dimensions}"
+        )
+
+    def _open_progress_chart(
+        self,
+        checked: bool = False,
+    ) -> None:
+        del checked
+        if self._expanded_progress_chart is None:
+            self._expanded_progress_chart = ObjectiveProgressChart()
+            self._expanded_progress_chart.set_interactive_navigation(
+                True
+            )
+            self._progress_dialog = ChartDialog(
+                "Optimization progress",
+                self._expanded_progress_chart,
+                footer_text=(
+                    "X axis — Evaluation: sequential objective evaluations. "
+                    "Y axis — Objective value: best-so-far, cumulative median "
+                    "and cumulative mean. A logarithmic Y scale is selected "
+                    "automatically for positive high-dynamic-range data."
+                ),
+                parent=self,
+            )
+        self._sync_expanded_charts()
+        assert self._progress_dialog is not None
+        self._progress_dialog.present()
+
+    def _open_diversity_chart(
+        self,
+        checked: bool = False,
+    ) -> None:
+        del checked
+        if self._expanded_diversity_chart is None:
+            self._expanded_diversity_chart = (
+                PopulationDiversityChart()
+            )
+            self._expanded_diversity_chart.set_interactive_navigation(
+                True
+            )
+            self._diversity_dialog = ChartDialog(
+                "Population diversity",
+                self._expanded_diversity_chart,
+                footer_text=(
+                    "X axis — Generation: optimization population generation. "
+                    "Y axis — Diversity metric: Spread is the sum of marginal "
+                    "sample standard deviations in normalized parameter space; "
+                    "Ellipse is the area of the 95% confidence ellipse in the "
+                    "two dominant PCA directions."
+                ),
+                parent=self,
+            )
+        self._sync_expanded_charts()
+        assert self._diversity_dialog is not None
+        self._diversity_dialog.present()
+
+    def _sync_expanded_charts(self) -> None:
+        window_size = self._selected_window_size()
+
+        if self._expanded_progress_chart is not None:
+            direction = (
+                self._snapshot.reference.direction
+                if self._snapshot is not None
+                else ObjectiveDirection.UNKNOWN
+            )
+            self._expanded_progress_chart.set_history(
+                self._history,
+                direction,
+            )
+            self._expanded_progress_chart.set_window_size(
+                window_size
+            )
+
+        if self._expanded_diversity_chart is not None:
+            precomputed = (
+                self._snapshot.population_diversity
+                if self._snapshot is not None
+                else ()
+            )
+            self._expanded_diversity_chart.set_precomputed_series(
+                precomputed
+            )
+            self._expanded_diversity_chart.set_history(
+                self._history
+            )
+            self._expanded_diversity_chart.set_window_size(
+                window_size
+            )
+
     def render_resource_snapshot(
         self,
         snapshot: SystemResourceSnapshot,
@@ -511,6 +684,8 @@ class OverviewPage(QWidget):
         self.progress_chart.set_history((), ObjectiveDirection.UNKNOWN)
         self.diversity_chart.set_precomputed_series(())
         self.diversity_chart.set_history(())
+        self.diversity_meta_label.setText("Awaiting population data")
+        self._sync_expanded_charts()
         self.run_health_panel.clear()
         self.search_behavior_panel.clear()
         self.resources_panel.clear()
@@ -522,3 +697,4 @@ class OverviewPage(QWidget):
             window_size = int(window_size)
         self.progress_chart.set_window_size(window_size)
         self.diversity_chart.set_window_size(window_size)
+        self._sync_expanded_charts()

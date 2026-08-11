@@ -147,7 +147,7 @@ class _MetricPanel(QFrame):
         self.setMinimumHeight(130)
         self.setSizePolicy(
             QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.MinimumExpanding,
+            QSizePolicy.Policy.Preferred,
         )
 
         self._preferred_columns = preferred_columns
@@ -193,7 +193,6 @@ class _MetricPanel(QFrame):
 
         layout.addLayout(header)
         layout.addLayout(self.grid)
-        layout.addStretch(1)
 
     @property
     def column_count(self) -> int:
@@ -283,7 +282,18 @@ class SearchBehaviorPanel(_MetricPanel):
                 ("dimensions", "Effective dimensions", "sparkline"),
             ),
             parent,
+            preferred_columns=3,
+            compact_breakpoint_px=460,
+            single_breakpoint_px=300,
         )
+
+        # Preserve the compatibility tile object but remove the empty slot
+        # while effective dimensionality is unavailable.
+        self.tiles["dimensions"].setVisible(False)
+        self._tile_order.remove("dimensions")
+        self._current_columns = 0
+        self._reflow_tiles(self._preferred_columns)
+
         variability_explanation = (
             "CV = 100 x population standard deviation / absolute mean. "
             "The current window contains valid objectives found within the "
@@ -345,7 +355,14 @@ class SearchBehaviorPanel(_MetricPanel):
 
 
 class ResourcesPanel(_MetricPanel):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        preferred_columns: int = 3,
+        compact_breakpoint_px: int = 560,
+        single_breakpoint_px: int = 360,
+    ) -> None:
         super().__init__(
             "Resources utilization",
             (
@@ -356,11 +373,11 @@ class ResourcesPanel(_MetricPanel):
                 ("sources", "Artifact sources", "sparkline"),
             ),
             parent,
-            preferred_columns=3,
-            compact_breakpoint_px=560,
-            single_breakpoint_px=360,
+            preferred_columns=preferred_columns,
+            compact_breakpoint_px=compact_breakpoint_px,
+            single_breakpoint_px=single_breakpoint_px,
         )
-        self.availability_label.setText("HOST + GOW RAM + ARTIFACT")
+        self.availability_label.setText("HOST + GOW + ARTIFACT")
 
     def render(self, snapshot: RunSnapshot) -> None:
         self.tiles["sources"].set_metric(

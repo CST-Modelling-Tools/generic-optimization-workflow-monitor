@@ -64,16 +64,25 @@ def test_main_window_wraps_overview_in_scroll_area(qtbot) -> None:
     window.resource_monitor.stop()
 
 
-def test_overview_contains_diversity_chart_below_objective_chart(qtbot) -> None:
+def test_overview_uses_professional_two_column_workspace(qtbot) -> None:
     page = OverviewPage()
     qtbot.addWidget(page)
 
-    layout = page.progress_chart.parentWidget().layout()
-    objective_index = layout.indexOf(page.progress_chart)
-    diversity_index = layout.indexOf(page.diversity_chart)
+    progress_index = page.dashboard_layout.indexOf(page.progress_panel)
+    health_index = page.dashboard_layout.indexOf(page.run_health_panel)
+    diversity_index = page.dashboard_layout.indexOf(page.diversity_panel)
 
-    assert objective_index >= 0
-    assert diversity_index > objective_index
+    assert page.dashboard_layout.getItemPosition(progress_index) == (
+        0, 0, 2, 1
+    )
+    assert page.dashboard_layout.getItemPosition(health_index) == (
+        0, 1, 1, 1
+    )
+    assert page.dashboard_layout.getItemPosition(diversity_index) == (
+        1, 1, 1, 1
+    )
+    assert page.expand_progress_button.objectName() == "chartActionButton"
+    assert page.expand_diversity_button.objectName() == "chartActionButton"
 
 
 def test_main_window_fits_overview_without_internal_scroll(qtbot) -> None:

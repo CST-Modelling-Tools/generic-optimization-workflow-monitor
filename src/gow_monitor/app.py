@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 
 from gow_monitor import __version__
 from gow_monitor.ui.main_window import MainWindow
+from gow_monitor.ui.splash_screen import SplashScreen
 
 
 def _positive_pid(value: str) -> int:
@@ -65,8 +66,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     application.setOrganizationName("CST Modelling Tools")
     application.setStyle("Fusion")
 
+    splash: SplashScreen | None = None
+    if owns_application:
+        splash = SplashScreen()
+        splash.show()
+        application.processEvents()
+
     window = MainWindow(gow_pid=arguments.gow_pid)
-    window.show()
 
     if arguments.results_root is not None:
         results_root = arguments.results_root.expanduser()
@@ -74,6 +80,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             results_root.mkdir(parents=True, exist_ok=True)
             window.connect_results_root_async(results_root)
         except OSError as exc:
+            if splash is not None:
+                splash.close()
             window.close()
             print(
                 f"Unable to connect GOW results directory: {exc}",
@@ -82,6 +90,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
 
     if not owns_application:
+        window.show()
         return 0
 
+    assert splash is not None
+    splash.finish(window)
     return int(application.exec())

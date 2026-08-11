@@ -1,19 +1,16 @@
 from __future__ import annotations
 
-from collections import deque
 from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent, QShowEvent
 from PySide6.QtWidgets import (
-    QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
-    QPushButton,
     QScrollArea,
     QStackedWidget,
     QVBoxLayout,
@@ -28,25 +25,17 @@ from gow_monitor.domain import (
     SystemResourceSnapshot,
 )
 from gow_monitor.infrastructure import GowFilesystemRunReader
-from gow_monitor.ui.live_refresh import LiveRefreshController, LiveRefreshPayload
+from gow_monitor.ui.main_viewmodel import MainViewModel
 from gow_monitor.ui.pages import OverviewPage
-from gow_monitor.ui.resource_monitor import ResourceMonitorController
-
-NAVIGATION_ITEMS = (
-    ("Overview", "Overview"),
-    ("Progress", "Optimization Progress"),
-    ("Search Behavior", "Search Behavior"),
-    ("Resources", "Resources Utilization"),
-    ("Alerts", "Run Alerts"),
-    ("Provenance", "Run Provenance"),
-    ("Configuration", "Configuration"),
+from gow_monitor.ui.widgets.header_widget import Header
+from gow_monitor.ui.widgets.sidebar_widget import (
+    NAVIGATION_ITEMS,
+    Sidebar,
 )
-
-AUTO_REFRESH_INTERVAL_MS = 1000
 
 
 class MainWindow(QMainWindow):
-    """Top-level desktop shell for the independent monitor."""
+    """Top-level desktop composition and ViewModel binding."""
 
     def __init__(
         self,
@@ -55,197 +44,144 @@ class MainWindow(QMainWindow):
         gow_pid: int | None = None,
     ) -> None:
         super().__init__(parent)
-        self.navigation_buttons: dict[str, QPushButton] = {}
-        self.page_titles: dict[str, QLabel] = {}
-        self.placeholder_labels: dict[str, QLabel] = {}
-        self._reader: GowFilesystemRunReader | None = None
-        self._snapshots: tuple[RunSnapshot, ...] = ()
-        self._histories: dict[str, tuple[EvaluationPoint, ...]] = {}
-        self._connected_path: Path | None = None
-        self._resource_history: deque[SystemResourceSnapshot] = deque(
-            maxlen=60
-        )
-        self._gow_resource_history: deque[
-            GowProcessResourceSnapshot
-        ] = deque(maxlen=60)
-
-        self.live_refresh = LiveRefreshController(
-            self,
-            interval_ms=AUTO_REFRESH_INTERVAL_MS,
-        )
-        self.live_refresh.refresh_started.connect(self._refresh_started)
-        self.live_refresh.refreshed.connect(self._refresh_completed)
-        self.live_refresh.refresh_failed.connect(self._refresh_failed)
-
-        self.resource_monitor = ResourceMonitorController(
-            self,
-            interval_ms=AUTO_REFRESH_INTERVAL_MS,
-            gow_pid=gow_pid,
-        )
-        self.resource_monitor.sampled.connect(self._resource_sampled)
-        self.resource_monitor.sample_failed.connect(self._resource_failed)
-        self.resource_monitor.gow_sampled.connect(
-            self._gow_resource_sampled
-        )
-        self.resource_monitor.gow_sample_failed.connect(
-            self._gow_resource_failed
-        )
 
         self.setWindowTitle("GOW Monitor")
         self.resize(1440, 900)
         self.setMinimumSize(1280, 760)
 
+        self.viewmodel = MainViewModel(self, gow_pid=gow_pid)
+
+        self.page_titles: dict[str, QLabel] = {}
+        self.placeholder_labels: dict[str, QLabel] = {}
+
         self._build_ui()
+        self._install_compatibility_aliases()
+        self._connect_viewmodel()
         self._apply_style()
-        self.select_page("Overview")
+
         self._render_no_run()
+        self.select_page("Overview")
+
+    # ------------------------------------------------------------------
+    # Compatibility facade
+    # ------------------------------------------------------------------
+
+    def _install_compatibility_aliases(self) -> None:
+        """Keep the existing MainWindow contract during the MVVM migration."""
+        self.live_refresh = self.viewmodel.live_refresh
+        self.resource_monitor = self.viewmodel.resource_monitor
+        self.navigation_buttons = self.sidebar.navigation_buttons
+
+        self.run_selector = self.header.run_selector
+        self.job_label = self.header.job_label
+        self.open_results_button = self.header.open_results_button
+        self.auto_refresh_label = self.header.auto_refresh_label
+        self.state_label = self.header.state_label
+
+        self.brand_label = self.sidebar.brand_label
+        self.sidebar_run_id = self.sidebar.sidebar_run_id
+        self.sidebar_problem = self.sidebar.sidebar_problem
+        self.sidebar_evaluations = self.sidebar.sidebar_evaluations
+        self.sidebar_failures = self.sidebar.sidebar_failures
+        self.version_label = self.sidebar.version_label
+
+        self._resource_history = self.viewmodel.resource_history
+        self._gow_resource_history = self.viewmodel.gow_resource_history
+
+    @property
+    def _reader(self) -> GowFilesystemRunReader | None:
+        return self.viewmodel.reader
+
+    @_reader.setter
+    def _reader(self, value: GowFilesystemRunReader | None) -> None:
+        self.viewmodel._reader = value
+
+    @property
+    def _snapshots(self) -> tuple[RunSnapshot, ...]:
+        return self.viewmodel.snapshots
+
+    @_snapshots.setter
+    def _snapshots(self, value: tuple[RunSnapshot, ...]) -> None:
+        self.viewmodel._snapshots = value
+
+    @property
+    def _histories(
+        self,
+    ) -> dict[str, tuple[EvaluationPoint, ...]]:
+        return self.viewmodel.histories
+
+    @_histories.setter
+    def _histories(
+        self,
+        value: dict[str, tuple[EvaluationPoint, ...]],
+    ) -> None:
+        self.viewmodel._histories = value
+
+    @property
+    def _connected_path(self) -> Path | None:
+        return self.viewmodel.connected_path
+
+    @_connected_path.setter
+    def _connected_path(self, value: Path | None) -> None:
+        self.viewmodel._connected_path = value
 
     @property
     def current_snapshot(self) -> RunSnapshot | None:
-        index = self.run_selector.currentIndex()
-        if index < 0 or index >= len(self._snapshots):
-            return None
-        return self._snapshots[index]
+        return self.viewmodel.get_snapshot_by_index(
+            self.run_selector.currentIndex()
+        )
 
     @property
     def current_history(self) -> tuple[EvaluationPoint, ...]:
         snapshot = self.current_snapshot
         if snapshot is None:
             return ()
-        return self._histories.get(snapshot.reference.run_id, ())
+        return self.viewmodel.get_history_for_run(
+            snapshot.reference.run_id
+        )
+
+    # ------------------------------------------------------------------
+    # UI composition
+    # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
         root = QWidget(self)
         root_layout = QHBoxLayout(root)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
-        self.sidebar = self._build_sidebar()
+
+        self.sidebar = Sidebar()
         self.sidebar.setVisible(False)
         root_layout.addWidget(self.sidebar)
-        root_layout.addWidget(self._build_content(), 1)
-        self.setCentralWidget(root)
 
-    def _build_sidebar(self) -> QWidget:
-        sidebar = QFrame()
-        sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(210)
-
-        layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(14, 18, 14, 18)
-        layout.setSpacing(8)
-
-        self.brand_label = QLabel("GOW")
-        brand = self.brand_label
-        brand.setObjectName("brand")
-        subtitle = QLabel("Optimization Monitor")
-        subtitle.setObjectName("brandSubtitle")
-        layout.addWidget(brand)
-        layout.addWidget(subtitle)
-        layout.addSpacing(24)
-
-        for key, _title in NAVIGATION_ITEMS:
-            button = QPushButton(key)
-            button.setObjectName("navigationButton")
-            button.setCheckable(True)
-            button.clicked.connect(
-                lambda checked=False, page_key=key: self.select_page(page_key)
-            )
-            self.navigation_buttons[key] = button
-            layout.addWidget(button)
-
-        layout.addStretch(1)
-
-        info_title = QLabel("Job info")
-        info_title.setObjectName("sidebarSectionTitle")
-        layout.addWidget(info_title)
-
-        self.sidebar_run_id = QLabel("Run: -")
-        self.sidebar_problem = QLabel("Problem: -")
-        self.sidebar_evaluations = QLabel("Evaluations: 0")
-        self.sidebar_failures = QLabel("Failures: 0")
-
-        for label in (
-            self.sidebar_run_id,
-            self.sidebar_problem,
-            self.sidebar_evaluations,
-            self.sidebar_failures,
-        ):
-            label.setObjectName("sidebarInfo")
-            label.setWordWrap(True)
-            layout.addWidget(label)
-
-        layout.addSpacing(12)
-        self.version_label = QLabel("Framework foundation | v0.1.0")
-        version = self.version_label
-        version.setObjectName("sidebarFooter")
-        version.setWordWrap(True)
-        layout.addWidget(version)
-        return sidebar
-
-    def _build_content(self) -> QWidget:
         content = QWidget()
         content.setObjectName("content")
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(12, 8, 12, 10)
-        layout.setSpacing(8)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(12, 7, 12, 8)
+        content_layout.setSpacing(6)
 
-        header = QFrame()
-        header.setObjectName("header")
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(12, 7, 12, 7)
-        header_layout.setSpacing(10)
+        self.header = Header()
+        content_layout.addWidget(self.header)
 
-        self.job_label = QLabel("Job: No run selected")
-        self.job_label.setObjectName("jobTitle")
-
-        self.run_selector = QComboBox()
-        self.run_selector.setObjectName("runSelector")
-        self.run_selector.setMinimumWidth(220)
-        self.run_selector.setEnabled(False)
-        self.run_selector.currentIndexChanged.connect(self._selected_run_changed)
-
-        self.open_results_button = QPushButton("Open GOW results")
-        self.open_results_button.setObjectName("primaryButton")
-        self.open_results_button.clicked.connect(self._choose_results_root)
-
-        self.auto_refresh_label = QLabel("AUTO OFF")
-        self.auto_refresh_label.setObjectName("refreshBadge")
-        self.auto_refresh_label.setProperty("refreshState", "off")
-        self.auto_refresh_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.auto_refresh_label.setMinimumWidth(82)
-
-        self.state_label = QLabel("IDLE")
-        self.state_label.setObjectName("stateBadge")
-        self.state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.state_label.setMinimumWidth(92)
-
-        header_layout.addWidget(self.job_label)
-        header_layout.addStretch(1)
-        header_layout.addWidget(self.run_selector)
-        header_layout.addWidget(self.open_results_button)
-        header_layout.addWidget(self.auto_refresh_label)
-        header_layout.addWidget(self.state_label)
-
-        self.results_root_label = QLabel("No GOW results directory selected")
+        self.results_root_label = QLabel(
+            "No GOW results directory selected"
+        )
         self.results_root_label.setObjectName("resultsRoot")
-        self.results_root_label.setMaximumHeight(18)
+        self.results_root_label.setMaximumHeight(16)
         self.results_root_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
+        content_layout.addWidget(self.results_root_label)
 
         self.stack = QStackedWidget()
 
         self.overview_page = OverviewPage()
-        self.page_titles["Overview"] = (
-            self.overview_page.title_label
-        )
+        self.page_titles["Overview"] = self.overview_page.title_label
 
         self.overview_scroll = QScrollArea()
         self.overview_scroll.setObjectName("overviewScroll")
         self.overview_scroll.setWidgetResizable(True)
-        self.overview_scroll.setFrameShape(
-            QFrame.Shape.NoFrame
-        )
+        self.overview_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.overview_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
@@ -256,21 +192,27 @@ class MainWindow(QMainWindow):
         self.overview_scroll.viewport().setObjectName(
             "overviewScrollViewport"
         )
-
         self.stack.addWidget(self.overview_scroll)
+
         for key, title in NAVIGATION_ITEMS:
             if key == "Overview":
                 continue
-            self.stack.addWidget(self._create_placeholder_page(title, key))
+            self.stack.addWidget(
+                self._create_placeholder_page(title, key)
+            )
 
-        layout.addWidget(header)
-        layout.addWidget(self.results_root_label)
-        layout.addWidget(self.stack, 1)
-        return content
+        content_layout.addWidget(self.stack, 1)
+        root_layout.addWidget(content, 1)
+        self.setCentralWidget(root)
 
-    def _create_placeholder_page(self, title: str, key: str) -> QWidget:
+    def _create_placeholder_page(
+        self,
+        title: str,
+        key: str,
+    ) -> QWidget:
         page = QWidget()
         page.setObjectName("page")
+
         layout = QVBoxLayout(page)
         layout.setContentsMargins(6, 12, 6, 6)
         layout.setSpacing(14)
@@ -301,7 +243,42 @@ class MainWindow(QMainWindow):
         layout.addWidget(title_label)
         layout.addWidget(description)
         layout.addWidget(panel, 1)
+
         return page
+
+    def _connect_viewmodel(self) -> None:
+        vm = self.viewmodel
+
+        vm.monitor_data_changed.connect(
+            self._on_monitor_data_changed
+        )
+        vm.refresh_status_changed.connect(
+            self.header.set_refresh_status
+        )
+        vm.run_state_changed.connect(self.header.set_run_state)
+
+        vm.system_resource_updated.connect(
+            self.overview_page.render_resource_snapshot
+        )
+        vm.resource_error.connect(
+            self.overview_page.render_resource_error
+        )
+        vm.gow_resource_updated.connect(
+            self.overview_page.render_gow_resource_snapshot
+        )
+        vm.gow_resource_error.connect(
+            self.overview_page.render_gow_resource_error
+        )
+
+        self.header.open_results_clicked.connect(
+            self._choose_results_root
+        )
+        self.header.run_selected.connect(self._on_run_selected)
+        self.sidebar.page_selected.connect(self.select_page)
+
+    # ------------------------------------------------------------------
+    # Navigation and data connection
+    # ------------------------------------------------------------------
 
     def select_page(self, key: str) -> None:
         keys = [item[0] for item in NAVIGATION_ITEMS]
@@ -309,70 +286,7 @@ class MainWindow(QMainWindow):
             raise KeyError(f"Unknown monitor page: {key}")
 
         self.stack.setCurrentIndex(keys.index(key))
-        for button_key, button in self.navigation_buttons.items():
-            button.setChecked(button_key == key)
-
-    def connect_results_root(self, results_root: str | Path) -> None:
-        reader, snapshots, histories = self._load_monitor_data(results_root)
-
-        self._connected_path = reader.selected_path
-        self._apply_monitor_data(
-            reader,
-            snapshots,
-            histories,
-            preferred_run_id=None,
-        )
-        self.live_refresh.connect_path(reader.selected_path)
-        self._set_refresh_status(
-            "AUTO 1s",
-            "live",
-            "GOW artifacts are refreshed every second in a background worker.",
-        )
-
-    def connect_results_root_async(
-        self,
-        results_root: str | Path,
-    ) -> None:
-        # Dedicated non-blocking path used only by CLI startup.
-        selected_path = Path(results_root).expanduser().resolve()
-        if not selected_path.exists():
-            raise FileNotFoundError(
-                f"The selected path does not exist: {selected_path}"
-            )
-        if not selected_path.is_dir():
-            raise NotADirectoryError(
-                f"The selected path is not a directory: {selected_path}"
-            )
-
-        self._reader = None
-        self._snapshots = ()
-        self._histories = {}
-        self._connected_path = selected_path
-
-        self.run_selector.blockSignals(True)
-        self.run_selector.clear()
-        self.run_selector.blockSignals(False)
-        self.run_selector.setEnabled(False)
-
-        self.results_root_label.setText(str(selected_path))
-        self.results_root_label.setToolTip(str(selected_path))
-        self._render_no_run(
-            "Loading GOW artifacts in the background. "
-            "Live resource telemetry remains available."
-        )
-
-        self.live_refresh.connect_path(selected_path)
-        self._set_refresh_status(
-            "SYNC",
-            "busy",
-            "Initial GOW artifact discovery is running in a background worker.",
-        )
-        self.live_refresh.refresh_now()
-
-    def refresh_connected_results(self) -> bool:
-        """Request an immediate refresh without changing the selected folder."""
-
-        return self.live_refresh.refresh_now()
+        self.sidebar.set_active_page(key)
 
     @staticmethod
     def _load_monitor_data(
@@ -387,56 +301,53 @@ class MainWindow(QMainWindow):
         histories: dict[str, tuple[EvaluationPoint, ...]] = {}
 
         for reference in reader.discover_runs():
-            snapshot, history = reader.snapshot_and_history_of(reference)
+            snapshot, history = reader.snapshot_and_history_of(
+                reference
+            )
             snapshots.append(snapshot)
             histories[reference.run_id] = history
 
         return reader, tuple(snapshots), histories
 
-    def _apply_monitor_data(
+    def connect_results_root(
         self,
-        reader: GowFilesystemRunReader,
-        snapshots: tuple[RunSnapshot, ...],
-        histories: dict[str, tuple[EvaluationPoint, ...]],
-        *,
-        preferred_run_id: str | None,
+        results_root: str | Path,
     ) -> None:
-        self._reader = reader
-        self._snapshots = snapshots
-        self._histories = histories
-        self.results_root_label.setText(str(reader.results_root))
-        self.results_root_label.setToolTip(str(reader.selected_path))
+        reader, snapshots, histories = self._load_monitor_data(
+            results_root
+        )
+        self.viewmodel.apply_loaded_data(
+            reader,
+            snapshots,
+            histories,
+        )
 
-        selected_index = 0
-        self.run_selector.blockSignals(True)
-        self.run_selector.clear()
-        for index, snapshot in enumerate(snapshots):
-            reference = snapshot.reference
-            problem = reference.problem_id or "unknown problem"
-            self.run_selector.addItem(
-                f"{reference.run_id} | {problem}",
-                reference.run_id,
-            )
-            if reference.run_id == preferred_run_id:
-                selected_index = index
-        self.run_selector.blockSignals(False)
-        self.run_selector.setEnabled(bool(snapshots))
+    def connect_results_root_async(
+        self,
+        results_root: str | Path,
+    ) -> None:
+        selected_path = Path(results_root).expanduser().resolve()
 
-        if snapshots:
-            self.run_selector.setCurrentIndex(selected_index)
-            self._render_snapshot(snapshots[selected_index])
-        else:
-            self._render_no_run(
-                "No runs found yet. Auto-refresh is watching the selected "
-                "directory for new GOW artifacts."
-            )
+        self.header.clear_runs()
+        self.results_root_label.setText(str(selected_path))
+        self.results_root_label.setToolTip(str(selected_path))
+        self._render_no_run(
+            "Loading GOW artifacts in the background. "
+            "Live resource telemetry remains available."
+        )
+
+        self.viewmodel.connect_results_root_async(selected_path)
+
+    def refresh_connected_results(self) -> bool:
+        return self.viewmodel.refresh_connected_results()
 
     def _choose_results_root(self) -> None:
         initial = (
-            str(self._reader.selected_path)
-            if self._reader is not None
+            str(self.viewmodel.reader.selected_path)
+            if self.viewmodel.reader is not None
             else str(Path.home())
         )
+
         selected = QFileDialog.getExistingDirectory(
             self,
             "Select GOW results directory",
@@ -444,6 +355,7 @@ class MainWindow(QMainWindow):
         )
         if not selected:
             return
+
         try:
             self.connect_results_root(selected)
         except OSError as exc:
@@ -453,65 +365,59 @@ class MainWindow(QMainWindow):
                 str(exc),
             )
 
-    def _selected_run_changed(self, index: int) -> None:
-        if 0 <= index < len(self._snapshots):
-            self._render_snapshot(self._snapshots[index])
+    # ------------------------------------------------------------------
+    # ViewModel -> view rendering
+    # ------------------------------------------------------------------
 
-    def _refresh_started(self) -> None:
-        self._set_refresh_status(
-            "SYNC",
-            "busy",
-            "Reading new GOW artifacts outside the UI thread.",
-        )
+    def _on_monitor_data_changed(self) -> None:
+        snapshots = self.viewmodel.snapshots
+        reader = self.viewmodel.reader
 
-    def _refresh_completed(self, payload: object) -> None:
-        if not isinstance(payload, LiveRefreshPayload):
-            return
-        if self._connected_path is None:
-            return
-        if payload.selected_path != self._connected_path:
-            return
+        previous_run_id = self.header.current_run_id()
+        selected_index = 0
 
-        preferred_run_id = self.run_selector.currentData()
-        if not isinstance(preferred_run_id, str):
-            preferred_run_id = None
+        if previous_run_id is not None:
+            for index, snapshot in enumerate(snapshots):
+                if snapshot.reference.run_id == previous_run_id:
+                    selected_index = index
+                    break
 
-        monitor_data_changed = (
-            payload.snapshots != self._snapshots
-            or payload.histories != self._histories
-        )
-        if monitor_data_changed:
-            self._apply_monitor_data(
-                payload.reader,
-                payload.snapshots,
-                payload.histories,
-                preferred_run_id=preferred_run_id,
+        self.header.populate_runs(snapshots, selected_index)
+
+        if reader is not None:
+            self.results_root_label.setText(str(reader.results_root))
+            self.results_root_label.setToolTip(
+                str(reader.selected_path)
             )
+        elif self.viewmodel.connected_path is not None:
+            path = self.viewmodel.connected_path
+            self.results_root_label.setText(str(path))
+            self.results_root_label.setToolTip(str(path))
+
+        if snapshots:
+            self._render_snapshot(snapshots[selected_index])
         else:
-            self._reader = payload.reader
+            self._render_no_run(
+                "No runs found yet. Auto-refresh is watching the selected "
+                "directory for new GOW artifacts."
+            )
 
-        self._set_refresh_status(
-            "AUTO 1s",
-            "live",
-            "Live refresh is active. The selected run is preserved.",
-        )
+    def _on_run_selected(self, index: int) -> None:
+        snapshot = self.viewmodel.get_snapshot_by_index(index)
+        if snapshot is not None:
+            self._render_snapshot(snapshot)
 
-    def _refresh_failed(self, message: str) -> None:
-        self._set_refresh_status(
-            "AUTO ERR",
-            "error",
-            message or "Unable to refresh GOW artifacts.",
-        )
+    def _selected_run_changed(self, index: int) -> None:
+        self._on_run_selected(index)
 
     def _render_snapshot(self, snapshot: RunSnapshot) -> None:
         reference = snapshot.reference
-        self.job_label.setText(f"Job: {reference.run_id}")
-        self._set_state(snapshot.state)
 
-        self.sidebar_run_id.setText(f"Run: {reference.run_id}")
-        self.sidebar_problem.setText(
-            f"Problem: {reference.problem_id or 'unknown'}"
+        self.header.set_job_title(
+            f"Job: {reference.run_id}"
         )
+        self.viewmodel.run_state_changed.emit(snapshot.state)
+
         if snapshot.planned_evaluations is None:
             evaluations_text = f"{snapshot.evaluation_count:,}"
         else:
@@ -519,44 +425,77 @@ class MainWindow(QMainWindow):
                 f"{snapshot.evaluation_count:,} / "
                 f"{snapshot.planned_evaluations:,}"
             )
-        self.sidebar_evaluations.setText(
-            f"Evaluations: {evaluations_text}"
-        )
-        self.sidebar_failures.setText(
-            f"Failures: {snapshot.failed_evaluations}"
+
+        self.sidebar.set_run_info(
+            reference.run_id,
+            reference.problem_id or "unknown",
+            evaluations_text,
+            str(snapshot.failed_evaluations),
         )
 
-        history = self._histories.get(reference.run_id, ())
-        if self._reader is not None:
-            self.resource_monitor.watch_gow_run(
-                results_root=self._reader.results_root,
+        if self.viewmodel.reader is not None:
+            self.viewmodel.watch_gow_run(
+                results_root=self.viewmodel.reader.results_root,
                 run_id=reference.run_id,
             )
+
+        history = self.viewmodel.get_history_for_run(
+            reference.run_id
+        )
         self.overview_page.render_snapshot(snapshot, history)
 
-        for key in self.placeholder_labels:
-            self.placeholder_labels[key].setText(
+        for key, placeholder in self.placeholder_labels.items():
+            placeholder.setText(
                 f"{reference.run_id} connected.\n"
                 f"The {key} view will use this run."
             )
 
-    def _render_no_run(self, message: str = "No GOW run connected") -> None:
-        self.job_label.setText("Job: No run selected")
-        self._set_state(RunState.UNKNOWN)
-        self.sidebar_run_id.setText("Run: -")
-        self.sidebar_problem.setText("Problem: -")
-        self.sidebar_evaluations.setText("Evaluations: 0")
-        self.sidebar_failures.setText("Failures: 0")
-        self._histories = {}
+    def _render_no_run(
+        self,
+        message: str = "No GOW run connected",
+    ) -> None:
+        self.header.set_job_title("Job: No run selected")
+        self.viewmodel.run_state_changed.emit(RunState.UNKNOWN)
+        self.sidebar.clear_info()
         self.overview_page.clear(message)
-        for label in self.placeholder_labels.values():
-            label.setText(message)
+
+        for placeholder in self.placeholder_labels.values():
+            placeholder.setText(message)
+
+    # ------------------------------------------------------------------
+    # Compatibility wrappers for existing tests/integrations
+    # ------------------------------------------------------------------
+
+    def _apply_monitor_data(
+        self,
+        reader: GowFilesystemRunReader,
+        snapshots: tuple[RunSnapshot, ...],
+        histories: dict[str, tuple[EvaluationPoint, ...]],
+        *,
+        preferred_run_id: str | None,
+    ) -> None:
+        del preferred_run_id
+        self.viewmodel.apply_loaded_data(
+            reader,
+            snapshots,
+            histories,
+        )
+
+    def _refresh_started(self) -> None:
+        self.header.set_refresh_status(
+            "SYNC",
+            "busy",
+            "Reading new GOW artifacts outside the UI thread.",
+        )
+
+    def _refresh_completed(self, payload: object) -> None:
+        self.viewmodel._on_refresh_completed(payload)
+
+    def _refresh_failed(self, message: str) -> None:
+        self.viewmodel._on_refresh_failed(message)
 
     def _set_state(self, state: RunState) -> None:
-        self.state_label.setText(state.value.upper())
-        self.state_label.setProperty("runState", state.value)
-        self.state_label.style().unpolish(self.state_label)
-        self.state_label.style().polish(self.state_label)
+        self.header.set_run_state(state)
 
     def _set_refresh_status(
         self,
@@ -564,20 +503,14 @@ class MainWindow(QMainWindow):
         state: str,
         tooltip: str,
     ) -> None:
-        self.auto_refresh_label.setText(text)
-        self.auto_refresh_label.setProperty("refreshState", state)
-        self.auto_refresh_label.setToolTip(tooltip)
-        self.auto_refresh_label.style().unpolish(self.auto_refresh_label)
-        self.auto_refresh_label.style().polish(self.auto_refresh_label)
+        self.header.set_refresh_status(text, state, tooltip)
 
     def _resource_sampled(self, payload: object) -> None:
         if not isinstance(payload, SystemResourceSnapshot):
             return
-
-        self._resource_history.append(payload)
         self.overview_page.render_resource_snapshot(
             payload,
-            tuple(self._resource_history),
+            tuple(self.viewmodel.resource_history),
         )
 
     def _resource_failed(self, message: str) -> None:
@@ -588,11 +521,9 @@ class MainWindow(QMainWindow):
     def _gow_resource_sampled(self, payload: object) -> None:
         if not isinstance(payload, GowProcessResourceSnapshot):
             return
-
-        self._gow_resource_history.append(payload)
         self.overview_page.render_gow_resource_snapshot(
             payload,
-            tuple(self._gow_resource_history),
+            tuple(self.viewmodel.gow_resource_history),
         )
 
     def _gow_resource_failed(self, message: str) -> None:
@@ -600,286 +531,20 @@ class MainWindow(QMainWindow):
             message or "GOW process telemetry is temporarily unavailable"
         )
 
+    # ------------------------------------------------------------------
+    # Lifecycle and theme
+    # ------------------------------------------------------------------
+
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
-        if not self.resource_monitor.is_active:
-            self.resource_monitor.start()
+        self.viewmodel.start_monitoring()
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        self.live_refresh.stop()
-        self.resource_monitor.stop()
+        self.viewmodel.stop_monitoring()
         super().closeEvent(event)
 
     def _apply_style(self) -> None:
+        style_path = Path(__file__).with_name("style.qss")
         self.setStyleSheet(
-            """
-            QMainWindow, QWidget#content, QWidget#page,
-            QScrollArea#overviewScroll,
-            QWidget#overviewScrollViewport {
-                background: #080E17;
-                color: #DCE6F2;
-                font-family: "Segoe UI";
-                font-size: 13px;
-            }
-            QFrame#sidebar {
-                background: #0A1320;
-                border-right: 1px solid #1F3044;
-            }
-            QLabel#brand {
-                color: #E7EEF7;
-                font-size: 22px;
-                font-weight: 700;
-            }
-            QLabel#brandSubtitle, QLabel#sidebarFooter,
-            QLabel#description, QLabel#resultsRoot, QLabel#sidebarInfo {
-                color: #7F91A8;
-            }
-            QLabel#sidebarSectionTitle {
-                color: #DCE6F2;
-                font-size: 12px;
-                font-weight: 700;
-            }
-            QPushButton#navigationButton {
-                background: transparent;
-                color: #8FA2B8;
-                border: 1px solid transparent;
-                border-radius: 5px;
-                padding: 10px 12px;
-                text-align: left;
-            }
-            QPushButton#navigationButton:hover {
-                background: #101E2E;
-                color: #DCE6F2;
-            }
-            QPushButton#navigationButton:checked {
-                background: #10243A;
-                color: #59B6FF;
-                border-color: #1D5278;
-            }
-            QFrame#header, QFrame#emptyPanel {
-                background: #0D1623;
-                border: 1px solid #1F3044;
-                border-radius: 6px;
-            }
-            QLabel#jobTitle {
-                font-size: 16px;
-                font-weight: 600;
-            }
-            QLabel#stateBadge, QLabel#refreshBadge {
-                background: #1A2736;
-                color: #9FB1C5;
-                border: 1px solid #33465C;
-                border-radius: 4px;
-                padding: 5px;
-                font-size: 11px;
-                font-weight: 700;
-            }
-            QLabel#stateBadge[runState="running"] {
-                background: #173B2B;
-                color: #72E2A7;
-                border-color: #245C42;
-            }
-            QLabel#stateBadge[runState="completed"] {
-                background: #163548;
-                color: #67D7FF;
-                border-color: #225873;
-            }
-            QLabel#stateBadge[runState="waiting"] {
-                background: #41361A;
-                color: #F6CE66;
-                border-color: #675525;
-            }
-            QLabel#stateBadge[runState="failed"] {
-                background: #421E25;
-                color: #FF7A86;
-                border-color: #6E2C37;
-            }
-            QLabel#refreshBadge[refreshState="live"] {
-                background: #173B2B;
-                color: #72E2A7;
-                border-color: #245C42;
-            }
-            QLabel#refreshBadge[refreshState="busy"] {
-                background: #163548;
-                color: #67D7FF;
-                border-color: #225873;
-            }
-            QLabel#refreshBadge[refreshState="error"] {
-                background: #421E25;
-                color: #FF7A86;
-                border-color: #6E2C37;
-            }
-            QFrame#kpiCard {
-                background: #0D1623;
-                border: 1px solid #1F3044;
-                border-radius: 6px;
-            }
-            QFrame#kpiCard[kpiTone="good"] {
-                border-color: #245C42;
-            }
-            QFrame#kpiCard[kpiTone="warning"] {
-                border-color: #675525;
-            }
-            QFrame#kpiCard[kpiTone="bad"] {
-                border-color: #6E2C37;
-            }
-            QFrame#kpiCard[kpiVisual="gauge"] {
-                background: #0C1724;
-            }
-            QLabel#kpiTitle {
-                color: #7F91A8;
-                font-size: 11px;
-                font-weight: 600;
-            }
-            QLabel#kpiValue {
-                color: #E7EEF7;
-                font-size: 22px;
-                font-weight: 700;
-            }
-            QLabel#kpiDetail {
-                color: #7890A9;
-                font-size: 11px;
-            }
-            QFrame#dashboardPanel, QFrame#runHealthPanel,
-            QFrame#metricPanel {
-                background: #0D1623;
-                border: 1px solid #1F3044;
-                border-radius: 6px;
-            }
-            QFrame#metricTile {
-                background: #0A121E;
-                border: 1px solid #1A2A3D;
-                border-radius: 4px;
-            }
-            QFrame#metricTile[metricTone="good"] {
-                border-bottom: 2px solid #3DBA77;
-            }
-            QFrame#metricTile[metricTone="warning"] {
-                border-bottom: 2px solid #E0B94E;
-            }
-            QFrame#metricTile[metricTone="bad"] {
-                border-bottom: 2px solid #F05B68;
-            }
-            QLabel#metricTitle {
-                color: #7890A9;
-                font-size: 10px;
-                font-weight: 600;
-            }
-            QLabel#metricValue {
-                color: #E7EEF7;
-                font-size: 18px;
-                font-weight: 700;
-            }
-            QLabel#metricDetail {
-                color: #71869E;
-                font-size: 10px;
-            }
-            QLabel#availabilityBadge {
-                color: #72E2A7;
-                background: #173B2B;
-                border: 1px solid #245C42;
-                border-radius: 3px;
-                padding: 2px 5px;
-                font-size: 9px;
-                font-weight: 700;
-            }
-            QLabel#panelTitle {
-                color: #DCE6F2;
-                font-size: 13px;
-                font-weight: 700;
-            }
-            QFrame#chartMetaBar {
-                background: #09111C;
-                border-top: 1px solid #1A2A3D;
-                border-radius: 3px;
-            }
-            QLabel#chartFooter {
-                color: #71869E;
-                font-family: "Consolas";
-                font-size: 10px;
-            }
-            QFrame#healthRow {
-                background: #0A121E;
-                border: 1px solid #1A2A3D;
-                border-radius: 4px;
-            }
-            QFrame#healthRow[severity="good"] {
-                border-left: 3px solid #3DBA77;
-            }
-            QFrame#healthRow[severity="warning"] {
-                border-left: 3px solid #E0B94E;
-            }
-            QFrame#healthRow[severity="critical"] {
-                border-left: 3px solid #F05B68;
-            }
-            QLabel#healthTitle {
-                color: #DCE6F2;
-                font-size: 12px;
-                font-weight: 600;
-            }
-            QLabel#healthDetail {
-                color: #7890A9;
-                font-size: 11px;
-            }
-            QLabel#healthSeverity, QLabel#healthSummary {
-                color: #8FA2B8;
-                border: 1px solid #33465C;
-                border-radius: 3px;
-                padding: 3px 5px;
-                font-size: 10px;
-                font-weight: 700;
-            }
-            QFrame#healthRow[severity="good"] QLabel#healthSeverity,
-            QLabel#healthSummary[healthState="healthy"] {
-                color: #72E2A7;
-                border-color: #245C42;
-                background: #173B2B;
-            }
-            QFrame#healthRow[severity="warning"] QLabel#healthSeverity,
-            QLabel#healthSummary[healthState="attention"] {
-                color: #F6CE66;
-                border-color: #675525;
-                background: #41361A;
-            }
-            QFrame#healthRow[severity="critical"] QLabel#healthSeverity {
-                color: #FF7A86;
-                border-color: #6E2C37;
-                background: #421E25;
-            }
-            QLabel#pageTitle {
-                color: #E7EEF7;
-                font-size: 20px;
-                font-weight: 700;
-            }
-            QLabel#placeholder {
-                color: #7890A9;
-                font-size: 16px;
-            }
-            QComboBox#runSelector {
-                background: #09111C;
-                color: #DCE6F2;
-                border: 1px solid #2A3C51;
-                border-radius: 4px;
-                padding: 7px 10px;
-            }
-            QComboBox#windowSelector {
-                background: #09111C;
-                color: #B9C8D8;
-                border: 1px solid #2A3C51;
-                border-radius: 4px;
-                padding: 5px 8px;
-                min-width: 130px;
-            }
-            QPushButton#primaryButton {
-                background: #1769AA;
-                color: #F4F8FC;
-                border: 1px solid #2B83C6;
-                border-radius: 4px;
-                padding: 7px 12px;
-                font-weight: 600;
-            }
-            QPushButton#primaryButton:hover {
-                background: #1E7BC1;
-            }
-            """
+            style_path.read_text(encoding="utf-8")
         )

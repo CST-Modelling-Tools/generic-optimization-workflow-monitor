@@ -8,14 +8,17 @@ from PySide6.QtGui import (
     QColor,
     QFontMetrics,
     QLinearGradient,
+    QMouseEvent,
     QPainter,
     QPainterPath,
     QPaintEvent,
     QPen,
+    QWheelEvent,
 )
 from PySide6.QtWidgets import QWidget
 
 from gow_monitor.domain import EvaluationPoint, ObjectiveDirection
+from gow_monitor.ui.widgets.chart_navigation import HorizontalZoom
 
 
 class ObjectiveProgressChart(QWidget):
@@ -26,14 +29,20 @@ class ObjectiveProgressChart(QWidget):
         self._history: tuple[EvaluationPoint, ...] = ()
         self._direction = ObjectiveDirection.UNKNOWN
         self._window_size: int | None = None
-        self.setMinimumHeight(185)
+        self._navigation = HorizontalZoom()
+        self._interactive_navigation = False
+        self._drag_anchor_x: float | None = None
+        self._drag_origin_x: float | None = None
+        self._drag_moved = False
+        self._selected_inspection: tuple[str, int] | None = None
+        self.setMinimumHeight(150)
         self.setToolTip(
             "Best-so-far, cumulative median, cumulative mean and failed "
             "evaluations. Positive high-dynamic-range data uses log scale."
         )
 
     def sizeHint(self) -> QSize:
-        return QSize(760, 210)
+        return QSize(760, 170)
 
     @property
     def history(self) -> tuple[EvaluationPoint, ...]:
@@ -55,17 +64,152 @@ class ObjectiveProgressChart(QWidget):
     def set_window_size(self, window_size: int | None) -> None:
         if window_size is not None and window_size < 2:
             raise ValueError("window_size must be at least 2")
+        if window_size == self._window_size:
+            return
         self._window_size = window_size
+        self._navigation.reset()
         self.update()
 
-    def visible_points(self) -> tuple[EvaluationPoint, ...]:
+    def _base_visible_points(self) -> tuple[EvaluationPoint, ...]:
         if self._window_size is None:
             return self._history
         return self._history[-self._window_size :]
 
+    def visible_points(self) -> tuple[EvaluationPoint, ...]:
+        points = self._base_visible_points()
+        first, last = self._navigation.slice_bounds(len(points))
+        return points[first:last]
+
+    @property
+    def interactive_navigation(self) -> bool:
+        return self._interactive_navigation
+
+    @property
+    def zoom_active(self) -> bool:
+        return self._navigation.active
+
+    @property
+    def selected_inspection(self) -> tuple[str, int] | None:
+        return self._selected_inspection
+
+    def clear_inspection(self) -> None:
+        self._selected_inspection = None
+        self.update()
+
+    def set_interactive_navigation(self, enabled: bool) -> None:
+        self._interactive_navigation = bool(enabled)
+        cursor = (
+            Qt.CursorShape.OpenHandCursor
+            if self._interactive_navigation
+            else Qt.CursorShape.ArrowCursor
+        )
+        self.setCursor(cursor)
+
+    def reset_view(self) -> None:
+        self._navigation.reset()
+        self.update()
+
+    def zoom_in(self, anchor: float = 0.5) -> None:
+        self._navigation.zoom_at(anchor, 0.72)
+        self.update()
+
+    def zoom_out(self, anchor: float = 0.5) -> None:
+        self._navigation.zoom_at(anchor, 1.0 / 0.72)
+        self.update()
+
     def effective_scale(self) -> str:
         values = self._numeric_values(self.visible_points())
         return self._select_scale(values)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        if not self._interactive_navigation:
+            super().wheelEvent(event)
+            return
+
+        delta = event.angleDelta().y()
+        if delta == 0:
+            event.ignore()
+            return
+
+        plot_width = max(10.0, self.width() - 82.0)
+        anchor = (event.position().x() - 62.0) / plot_width
+        anchor = min(1.0, max(0.0, anchor))
+
+        if delta > 0:
+            self.zoom_in(anchor)
+        else:
+            self.zoom_out(anchor)
+
+        event.accept()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if (
+            self._interactive_navigation
+            and event.button() is Qt.MouseButton.LeftButton
+        ):
+            position_x = event.position().x()
+            self._drag_anchor_x = position_x
+            self._drag_origin_x = position_x
+            self._drag_moved = False
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if (
+            self._interactive_navigation
+            and self._drag_anchor_x is not None
+        ):
+            current_x = event.position().x()
+            if (
+                self._drag_origin_x is not None
+                and abs(current_x - self._drag_origin_x) >= 4.0
+            ):
+                self._drag_moved = True
+
+            if self._drag_moved:
+                plot_width = max(10.0, self.width() - 82.0)
+                delta_fraction = (
+                    self._drag_anchor_x - current_x
+                ) / plot_width
+                self._navigation.pan_display_fraction(
+                    delta_fraction
+                )
+                self._drag_anchor_x = current_x
+                self.update()
+
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if (
+            self._interactive_navigation
+            and event.button() is Qt.MouseButton.LeftButton
+        ):
+            was_click = not self._drag_moved
+            self._drag_anchor_x = None
+            self._drag_origin_x = None
+            self._drag_moved = False
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+            if was_click:
+                self.inspect_at(event.position())
+
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if (
+            self._interactive_navigation
+            and event.button() is Qt.MouseButton.LeftButton
+        ):
+            self.reset_view()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
     def paintEvent(self, event: QPaintEvent) -> None:
         del event
@@ -123,7 +267,311 @@ class ObjectiveProgressChart(QWidget):
             scale=scale,
         )
         self._draw_legend(painter, chart_rect)
+        self._draw_inspection(
+            painter,
+            chart_rect,
+            points,
+            x_min=x_min,
+            x_max=x_max,
+            y_min=y_min,
+            y_max=y_max,
+            scale=scale,
+        )
         painter.end()
+
+    def inspect_at(self, position: QPointF) -> bool:
+        if not self._interactive_navigation:
+            return False
+
+        chart_rect = QRectF(
+            62.0,
+            30.0,
+            max(10.0, self.width() - 82.0),
+            max(10.0, self.height() - 68.0),
+        )
+
+        if not chart_rect.adjusted(
+            -12.0,
+            -12.0,
+            12.0,
+            12.0,
+        ).contains(position):
+            self.clear_inspection()
+            return False
+
+        points = self.visible_points()
+        numeric_values = self._numeric_values(points)
+        if not points or not numeric_values:
+            self.clear_inspection()
+            return False
+
+        scale = self._select_scale(numeric_values)
+        transformed_values = [
+            self._transform_value(value, scale)
+            for value in numeric_values
+        ]
+        y_min, y_max = self._expanded_bounds(
+            transformed_values,
+            clamp_zero=scale == "linear",
+        )
+
+        x_min = points[0].evaluation
+        x_max = points[-1].evaluation
+        if x_min == x_max:
+            x_max = x_min + 1
+
+        candidates = self._inspection_candidates(
+            chart_rect,
+            points,
+            x_min=x_min,
+            x_max=x_max,
+            y_min=y_min,
+            y_max=y_max,
+            scale=scale,
+        )
+        if not candidates:
+            self.clear_inspection()
+            return False
+
+        nearest = min(
+            candidates,
+            key=lambda candidate: (
+                (candidate[3].x() - position.x()) ** 2
+                + (candidate[3].y() - position.y()) ** 2
+            ),
+        )
+        distance_squared = (
+            (nearest[3].x() - position.x()) ** 2
+            + (nearest[3].y() - position.y()) ** 2
+        )
+
+        if distance_squared > 20.0**2:
+            self.clear_inspection()
+            return False
+
+        self._selected_inspection = (
+            nearest[0],
+            nearest[1].evaluation,
+        )
+        self.update()
+        return True
+
+    def _inspection_candidates(
+        self,
+        chart_rect: QRectF,
+        points: tuple[EvaluationPoint, ...],
+        *,
+        x_min: int,
+        x_max: int,
+        y_min: float,
+        y_max: float,
+        scale: str,
+    ) -> list[
+        tuple[
+            str,
+            EvaluationPoint,
+            float | None,
+            QPointF,
+            QColor,
+        ]
+    ]:
+        candidates: list[
+            tuple[
+                str,
+                EvaluationPoint,
+                float | None,
+                QPointF,
+                QColor,
+            ]
+        ] = []
+
+        series_specs = (
+            ("Best-so-far", "best_so_far", QColor("#4D8DFF")),
+            ("Median", "median_so_far", QColor("#A17AF0")),
+            ("Mean", "mean_so_far", QColor("#8295A8")),
+        )
+
+        for point in points:
+            x = self._map_x(
+                point.evaluation,
+                chart_rect,
+                x_min=x_min,
+                x_max=x_max,
+            )
+            for label, attribute, color in series_specs:
+                value = getattr(point, attribute)
+                if value is None or not math.isfinite(value):
+                    continue
+                y = self._map_y(
+                    value,
+                    chart_rect,
+                    y_min=y_min,
+                    y_max=y_max,
+                    scale=scale,
+                )
+                candidates.append(
+                    (
+                        label,
+                        point,
+                        value,
+                        QPointF(x, y),
+                        color,
+                    )
+                )
+
+            if point.status != "ok":
+                value = point.objective
+                if value is not None and not math.isfinite(value):
+                    value = None
+                candidates.append(
+                    (
+                        "Failed",
+                        point,
+                        value,
+                        QPointF(x, chart_rect.bottom() - 6.0),
+                        QColor("#FF6B78"),
+                    )
+                )
+
+        return candidates
+
+    def _draw_inspection(
+        self,
+        painter: QPainter,
+        chart_rect: QRectF,
+        points: tuple[EvaluationPoint, ...],
+        *,
+        x_min: int,
+        x_max: int,
+        y_min: float,
+        y_max: float,
+        scale: str,
+    ) -> None:
+        selection = self._selected_inspection
+        if selection is None:
+            return
+
+        candidates = self._inspection_candidates(
+            chart_rect,
+            points,
+            x_min=x_min,
+            x_max=x_max,
+            y_min=y_min,
+            y_max=y_max,
+            scale=scale,
+        )
+
+        selected = next(
+            (
+                candidate
+                for candidate in candidates
+                if (
+                    candidate[0],
+                    candidate[1].evaluation,
+                )
+                == selection
+            ),
+            None,
+        )
+        if selected is None:
+            return
+
+        label, point, value, mapped, color = selected
+
+        guide_color = QColor(color)
+        guide_color.setAlpha(75)
+        painter.setPen(
+            QPen(
+                guide_color,
+                1.0,
+                Qt.PenStyle.DotLine,
+            )
+        )
+        painter.drawLine(
+            QPointF(mapped.x(), chart_rect.top()),
+            QPointF(mapped.x(), chart_rect.bottom()),
+        )
+
+        painter.setPen(QPen(QColor("#EAF2FA"), 2.0))
+        painter.setBrush(color)
+        painter.drawEllipse(mapped, 6.0, 6.0)
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#EAF2FA"))
+        painter.drawEllipse(mapped, 2.2, 2.2)
+
+        value_text = (
+            "N/A"
+            if value is None
+            else self._format_inspection_value(value)
+        )
+        lines = (
+            f"Evaluation: {point.evaluation}",
+            f"Series: {label}",
+            f"Value: {value_text}",
+        )
+        self._draw_inspection_box(
+            painter,
+            chart_rect,
+            mapped,
+            lines,
+            color,
+        )
+
+    @staticmethod
+    def _format_inspection_value(value: float) -> str:
+        return f"{value:.17g}"
+
+    @staticmethod
+    def _draw_inspection_box(
+        painter: QPainter,
+        chart_rect: QRectF,
+        anchor: QPointF,
+        lines: tuple[str, ...],
+        accent: QColor,
+    ) -> None:
+        metrics = QFontMetrics(painter.font())
+        line_height = metrics.height() + 4.0
+        box_width = 260.0
+        box_height = 16.0 + line_height * len(lines)
+
+        x = anchor.x() + 14.0
+        if x + box_width > chart_rect.right() - 6.0:
+            x = anchor.x() - box_width - 14.0
+        x = max(
+            chart_rect.left() + 6.0,
+            min(x, chart_rect.right() - box_width - 6.0),
+        )
+
+        y = anchor.y() - box_height - 14.0
+        if y < chart_rect.top() + 6.0:
+            y = anchor.y() + 14.0
+        y = max(
+            chart_rect.top() + 6.0,
+            min(y, chart_rect.bottom() - box_height - 6.0),
+        )
+
+        box = QRectF(x, y, box_width, box_height)
+
+        painter.setPen(QPen(accent, 1.2))
+        painter.setBrush(QColor(9, 19, 31, 242))
+        painter.drawRoundedRect(box, 6.0, 6.0)
+
+        painter.setPen(QColor("#EAF2FA"))
+        text_y = box.top() + 8.0
+        for line in lines:
+            painter.drawText(
+                QRectF(
+                    box.left() + 10.0,
+                    text_y,
+                    box.width() - 20.0,
+                    line_height,
+                ),
+                Qt.AlignmentFlag.AlignLeft
+                | Qt.AlignmentFlag.AlignVCenter,
+                line,
+            )
+            text_y += line_height
 
     @staticmethod
     def _numeric_values(points: Iterable[EvaluationPoint]) -> list[float]:
