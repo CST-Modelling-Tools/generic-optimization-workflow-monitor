@@ -115,7 +115,7 @@ def test_overview_renders_compact_progress_dashboard(
     window.connect_results_root(results_root)
 
     assert len(window.current_history) == 2
-    assert window.overview_page.cards["best"].value_label.text() == "2"
+    assert window.overview_page.cards["best"].value_label.text() == "2.00"
     assert window.overview_page.cards["improvement"].value_label.text() == "50.00%"
     assert window.overview_page.progress_chart.history == window.current_history
     assert window.overview_page.run_health_panel.summary_label.text() == "HEALTHY"
@@ -139,7 +139,7 @@ def test_live_refresh_updates_progress_chart(
 
     qtbot.waitUntil(lambda: len(window.current_history) == 2, timeout=3000)
 
-    assert window.overview_page.cards["best"].value_label.text() == "1"
+    assert window.overview_page.cards["best"].value_label.text() == "1.00"
     assert len(window.overview_page.progress_chart.history) == 2
 
 

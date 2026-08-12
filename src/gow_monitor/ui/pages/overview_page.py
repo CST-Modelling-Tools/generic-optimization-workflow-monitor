@@ -47,6 +47,9 @@ from gow_monitor.ui.widgets.chart_dialog import ChartDialog
 class OverviewPage(QWidget):
     """Dense live dashboard for the currently selected GOW run."""
 
+    _OBJECTIVE_DECIMALS_MIN = 2
+    _OBJECTIVE_DECIMALS_MAX = 12
+
     _TERMINAL_STATES = frozenset(
         {
             RunState.COMPLETED,
@@ -62,6 +65,7 @@ class OverviewPage(QWidget):
         self._history: tuple[EvaluationPoint, ...] = ()
         self._runtime_completion_times: dict[str, float] = {}
         self._evaluation_detail_base = ""
+        self._objective_decimals = self._OBJECTIVE_DECIMALS_MIN
         self._progress_dialog: ChartDialog | None = None
         self._diversity_dialog: ChartDialog | None = None
         self._expanded_progress_chart: ObjectiveProgressChart | None = None
@@ -99,8 +103,60 @@ class OverviewPage(QWidget):
             "success": KpiCard("Success rate", visual="gauge"),
             "failures": KpiCard("Failure rate", visual="gauge"),
         }
-        for card in self.cards.values():
+
+        self.cards["elapsed"].setParent(self)
+        self.cards["elapsed"].hide()
+
+        self.cards["best"].show_value_controls()
+        self.cards["best"].decrease_button.clicked.connect(
+            self._decrease_objective_decimals
+        )
+        self.cards["best"].increase_button.clicked.connect(
+            self._increase_objective_decimals
+        )
+
+        for key, card in self.cards.items():
+            if key == "elapsed":
+                card.setParent(self)
+                continue
             cards_layout.addWidget(card, 1)
+
+        timer_row = QHBoxLayout()
+        timer_row.setContentsMargins(0, 0, 0, 0)
+        timer_row.setSpacing(0)
+
+        self.timer_panel = QFrame()
+        self.timer_panel.setObjectName("runTimerPanel")
+        self.timer_panel.setProperty("timerState", "waiting")
+        self.timer_panel.setMinimumWidth(270)
+        self.timer_panel.setMaximumWidth(340)
+        self.timer_panel.setFixedHeight(50)
+
+        timer_layout = QHBoxLayout(self.timer_panel)
+        timer_layout.setContentsMargins(14, 5, 12, 5)
+        timer_layout.setSpacing(10)
+
+        self.timer_caption_label = QLabel("RUN TIMER")
+        self.timer_caption_label.setObjectName("runTimerCaption")
+
+        self.timer_value_label = QLabel("--:--:--")
+        self.timer_value_label.setObjectName("runTimerValue")
+        self.timer_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.timer_value_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+
+        self.timer_status_label = QLabel("WAITING")
+        self.timer_status_label.setObjectName("runTimerStatus")
+        self.timer_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        timer_layout.addWidget(self.timer_caption_label)
+        timer_layout.addWidget(self.timer_value_label, 1)
+        timer_layout.addWidget(self.timer_status_label)
+
+        timer_row.addStretch(1)
+        timer_row.addWidget(self.timer_panel)
+        timer_row.addStretch(1)
 
         self.dashboard_layout = QGridLayout()
         self.dashboard_layout.setContentsMargins(0, 0, 0, 0)
@@ -229,6 +285,7 @@ class OverviewPage(QWidget):
         self._reflow_lower_panels(stacked=False)
 
         layout.addLayout(heading_row)
+        layout.addLayout(timer_row)
         layout.addLayout(cards_layout)
         layout.addLayout(self.dashboard_layout, 1)
         layout.addLayout(self.lower_layout)
@@ -316,6 +373,78 @@ class OverviewPage(QWidget):
             decimal_text = decimal_text.rstrip("0").rstrip(".")
         return decimal_text
 
+    def _format_best_objective(
+        self,
+        value: float | None,
+    ) -> str:
+        if value is None:
+            return "-"
+        return f"{value:.{self._objective_decimals}f}"
+
+    def _set_objective_decimals(self, decimals: int) -> None:
+        bounded = max(
+            self._OBJECTIVE_DECIMALS_MIN,
+            min(self._OBJECTIVE_DECIMALS_MAX, int(decimals)),
+        )
+        if bounded == self._objective_decimals:
+            self._update_objective_precision_controls()
+            return
+
+        self._objective_decimals = bounded
+        self._update_objective_precision_controls()
+        self._render_best_objective()
+
+    def _decrease_objective_decimals(
+        self,
+        checked: bool = False,
+    ) -> None:
+        del checked
+        self._set_objective_decimals(
+            self._objective_decimals - 1
+        )
+
+    def _increase_objective_decimals(
+        self,
+        checked: bool = False,
+    ) -> None:
+        del checked
+        self._set_objective_decimals(
+            self._objective_decimals + 1
+        )
+
+    def _update_objective_precision_controls(self) -> None:
+        card = self.cards["best"]
+        card.decrease_button.setEnabled(
+            self._objective_decimals
+            > self._OBJECTIVE_DECIMALS_MIN
+        )
+        card.increase_button.setEnabled(
+            self._objective_decimals
+            < self._OBJECTIVE_DECIMALS_MAX
+        )
+        card.value_label.setToolTip(
+            f"Displayed with {self._objective_decimals} decimal places"
+        )
+
+    def _render_best_objective(self) -> None:
+        snapshot = self._snapshot
+        if snapshot is None:
+            self._update_objective_precision_controls()
+            return
+
+        reference = snapshot.reference
+        self.cards["best"].set_value(
+            self._format_best_objective(snapshot.best_objective),
+            detail=reference.direction.value,
+            tone=(
+                "good"
+                if snapshot.best_objective is not None
+                else "neutral"
+            ),
+            series=best_series(self._history),
+        )
+        self._update_objective_precision_controls()
+
     def render_snapshot(
         self,
         snapshot: RunSnapshot,
@@ -338,12 +467,7 @@ class OverviewPage(QWidget):
         success_rate = snapshot.success_rate * 100.0
         failure_rate = snapshot.failure_rate * 100.0
 
-        self.cards["best"].set_value(
-            self._format_objective(snapshot.best_objective),
-            detail=reference.direction.value,
-            tone="good" if snapshot.best_objective is not None else "neutral",
-            series=best_series(history),
-        )
+        self._render_best_objective()
         if snapshot.planned_evaluations is not None:
             planned = snapshot.planned_evaluations
             evaluation_value = (
@@ -427,6 +551,11 @@ class OverviewPage(QWidget):
                 "N/A",
                 detail="Timing data unavailable",
             )
+            self._set_timer_display(
+                "N/A",
+                status="UNAVAILABLE",
+                state="unavailable",
+            )
             self._render_evaluation_rate(
                 throughput=None,
                 terminal=False,
@@ -441,10 +570,16 @@ class OverviewPage(QWidget):
             else None
         )
 
+        duration_text = self._format_duration(elapsed)
         self.cards["elapsed"].set_value(
-            self._format_duration(elapsed),
+            duration_text,
             detail=elapsed_detail,
             tone="good" if terminal else "neutral",
+        )
+        self._set_timer_display(
+            duration_text,
+            status="FINAL" if terminal else "LIVE",
+            state="final" if terminal else "running",
         )
         self._render_evaluation_rate(
             throughput=throughput,
@@ -546,6 +681,25 @@ class OverviewPage(QWidget):
 
         clock = f"{hours:02d}:{minutes:02d}:{seconds_part:02d}"
         return f"{days}d {clock}" if days else clock
+
+    def _set_timer_display(
+        self,
+        value: str,
+        *,
+        status: str,
+        state: str,
+    ) -> None:
+        self.timer_value_label.setText(value)
+        self.timer_status_label.setText(status)
+        self.timer_panel.setProperty("timerState", state)
+        self.timer_panel.style().unpolish(self.timer_panel)
+        self.timer_panel.style().polish(self.timer_panel)
+        self.timer_status_label.style().unpolish(
+            self.timer_status_label
+        )
+        self.timer_status_label.style().polish(
+            self.timer_status_label
+        )
 
     def _selected_window_size(self) -> int | None:
         value = self.window_selector.currentData()
@@ -681,6 +835,12 @@ class OverviewPage(QWidget):
         self._evaluation_detail_base = ""
         for card in self.cards.values():
             card.set_value("-", detail="Waiting for GOW artifacts")
+        self._set_timer_display(
+            "--:--:--",
+            status="WAITING",
+            state="waiting",
+        )
+        self._update_objective_precision_controls()
         self.progress_chart.set_history((), ObjectiveDirection.UNKNOWN)
         self.diversity_chart.set_precomputed_series(())
         self.diversity_chart.set_history(())

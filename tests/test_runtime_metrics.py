@@ -121,7 +121,7 @@ def test_completed_run_shows_final_duration_and_average_rate(
     assert page.cards["evaluations"].detail_label.text() == (
         "120.00 eval/min | final avg\n1 distinct source(s)"
     )
-    assert page.cards["best"].value_label.text() == "1.234567890123"
+    assert page.cards["best"].value_label.text() == "1.23"
     page.runtime_timer.stop()
 
 
@@ -181,6 +181,11 @@ def test_best_objective_never_uses_scientific_notation(qtbot) -> None:
 
     page.render_snapshot(snapshot, ())
 
+    objective_text = page.cards["best"].value_label.text()
+    assert objective_text == "0.00"
+    assert "e" not in objective_text.lower()
+
+    page._set_objective_decimals(6)
     objective_text = page.cards["best"].value_label.text()
     assert objective_text == "0.000064"
     assert "e" not in objective_text.lower()

@@ -511,3 +511,90 @@ QLabel#chartDialogControls {
     color: #6F879F;
     font-size: 9px;
 }
+/* STEP 27 - Objective precision controls + centered run timer */
+
+QWidget#kpiValueControls {
+    background: transparent;
+}
+
+QPushButton#kpiPrecisionButton {
+    background: #0A1420;
+    color: #8FAAC2;
+    border: 1px solid #2A4058;
+    border-radius: 4px;
+    padding: 0;
+    font-family: "Segoe UI";
+    font-size: 13px;
+    font-weight: 700;
+}
+
+QPushButton#kpiPrecisionButton:hover {
+    background: #14304A;
+    color: #EAF4FF;
+    border-color: #3B6F96;
+}
+
+QPushButton#kpiPrecisionButton:pressed {
+    background: #0E253A;
+}
+
+QPushButton#kpiPrecisionButton:disabled {
+    background: #0A111B;
+    color: #3D5064;
+    border-color: #18293A;
+}
+
+QFrame#runTimerPanel {
+    background: #071421;
+    border: 1px solid #2A5D82;
+    border-radius: 9px;
+}
+
+QFrame#runTimerPanel[timerState="running"] {
+    background: #081A29;
+    border-color: #2F8DD3;
+}
+
+QFrame#runTimerPanel[timerState="final"] {
+    background: #0A1B20;
+    border-color: #2F8063;
+}
+
+QFrame#runTimerPanel[timerState="unavailable"] {
+    border-color: #4A5663;
+}
+
+QLabel#runTimerCaption {
+    color: #5F809D;
+    font-size: 9px;
+    font-weight: 700;
+}
+
+QLabel#runTimerValue {
+    color: #E9F5FF;
+    font-family: "Consolas";
+    font-size: 21px;
+    font-weight: 700;
+}
+
+QLabel#runTimerStatus {
+    color: #8198AD;
+    background: #0D1D2C;
+    border: 1px solid #294158;
+    border-radius: 4px;
+    padding: 2px 5px;
+    font-size: 8px;
+    font-weight: 700;
+}
+
+QFrame#runTimerPanel[timerState="running"] QLabel#runTimerStatus {
+    color: #67D7FF;
+    background: #12334A;
+    border-color: #275E80;
+}
+
+QFrame#runTimerPanel[timerState="final"] QLabel#runTimerStatus {
+    color: #72E2A7;
+    background: #173B2B;
+    border-color: #245C42;
+}

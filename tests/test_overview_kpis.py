@@ -114,7 +114,7 @@ def test_overview_renders_kpis_and_ascii_labels(
     window.connect_results_root(results_root)
 
     assert window.overview_page.cards["evaluations"].value_label.text() == "2"
-    assert window.overview_page.cards["best"].value_label.text() == "1"
+    assert window.overview_page.cards["best"].value_label.text() == "1.00"
     assert window.brand_label.text() == "GOW"
     assert window.version_label.text() == "Framework foundation | v0.1.0"
     assert "|" in window.run_selector.currentText()
@@ -133,13 +133,13 @@ def test_live_refresh_updates_overview_best_objective(
     window = MainWindow()
     qtbot.addWidget(window)
     window.connect_results_root(results_root)
-    assert window.overview_page.cards["best"].value_label.text() == "2"
+    assert window.overview_page.cards["best"].value_label.text() == "2.00"
 
     _write_result(run_root, candidate_id="g000000_c000001", objective=0.5)
     window.refresh_connected_results()
 
     qtbot.waitUntil(
-        lambda: window.overview_page.cards["best"].value_label.text() == "0.5",
+        lambda: window.overview_page.cards["best"].value_label.text() == "0.50",
         timeout=3000,
     )
 

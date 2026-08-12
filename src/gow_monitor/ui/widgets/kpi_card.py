@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -71,9 +72,44 @@ class KpiCard(QFrame):
         self.detail_label.setObjectName("kpiDetail")
         self.detail_label.setWordWrap(True)
 
+        self.value_controls = QWidget(self)
+        self.value_controls.setObjectName("kpiValueControls")
+        controls_layout = QHBoxLayout(self.value_controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(3)
+
+        self.decrease_button = QPushButton("−")
+        self.decrease_button.setObjectName("kpiPrecisionButton")
+        self.decrease_button.setToolTip(
+            "Decrease displayed decimal places"
+        )
+        self.decrease_button.setFixedSize(18, 18)
+        self.decrease_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        self.increase_button = QPushButton("+")
+        self.increase_button.setObjectName("kpiPrecisionButton")
+        self.increase_button.setToolTip(
+            "Increase displayed decimal places"
+        )
+        self.increase_button.setFixedSize(18, 18)
+        self.increase_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        controls_layout.addWidget(self.decrease_button)
+        controls_layout.addWidget(self.increase_button)
+        self.value_controls.setVisible(False)
+
+        detail_row = QHBoxLayout()
+        detail_row.setContentsMargins(0, 0, 0, 0)
+        detail_row.setSpacing(5)
+        detail_row.addWidget(self.value_controls)
+        detail_row.addWidget(self.detail_label, 1)
+
         layout.addWidget(self.title_label)
         layout.addLayout(value_row)
-        layout.addWidget(self.detail_label)
+        layout.addLayout(detail_row)
+
+    def show_value_controls(self, visible: bool = True) -> None:
+        self.value_controls.setVisible(visible)
 
     def set_value(
         self,
