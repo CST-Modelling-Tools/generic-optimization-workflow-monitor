@@ -17,6 +17,9 @@ class RunReaderPort(Protocol):
 
 
 class RunControlPort(Protocol):
+    def request_pause(self, run: RunReference) -> str:
+        """Request a cooperative pause and return its request id."""
+
     def request_stop(self, run: RunReference) -> None:
         """Request a cooperative stop without killing the process."""
 

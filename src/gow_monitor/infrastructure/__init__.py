@@ -1,4 +1,10 @@
-﻿from gow_monitor.infrastructure.gow_results import (
+from gow_monitor.infrastructure.gow_control import (
+    GowFilesystemRunController,
+    GowRunControlError,
+    InvalidExistingPauseRequestError,
+    MissingRunRootError,
+)
+from gow_monitor.infrastructure.gow_results import (
     GowFilesystemRunReader,
     GowPathResolution,
 )
@@ -13,7 +19,11 @@ from gow_monitor.infrastructure.process_resources import GowProcessTreeReader
 from gow_monitor.infrastructure.system_resources import SystemResourceReader
 
 __all__ = [
+    "GowFilesystemRunController",
     "GowFilesystemRunReader",
+    "GowRunControlError",
+    "InvalidExistingPauseRequestError",
+    "MissingRunRootError",
     "GowPathResolution",
     "GowProcessTreeReader",
     "GpuReader",
