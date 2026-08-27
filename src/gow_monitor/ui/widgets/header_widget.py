@@ -15,6 +15,7 @@ class Header(QFrame):
 
     run_selected = Signal(int)
     open_results_clicked = Signal()
+    pause_clicked = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -43,6 +44,17 @@ class Header(QFrame):
             self._emit_open_results
         )
 
+        self.pause_button = QPushButton("Pause")
+        self.pause_button.setObjectName("primaryButton")
+        self.pause_button.setEnabled(False)
+        self.pause_button.setToolTip(
+            "Request a cooperative pause at the next safe "
+            "completed-generation boundary."
+        )
+        self.pause_button.clicked.connect(
+            self._emit_pause
+        )
+
         self.auto_refresh_label = QLabel("AUTO OFF")
         self.auto_refresh_label.setObjectName("refreshBadge")
         self.auto_refresh_label.setProperty("refreshState", "off")
@@ -60,12 +72,17 @@ class Header(QFrame):
         layout.addStretch(1)
         layout.addWidget(self.run_selector)
         layout.addWidget(self.open_results_button)
+        layout.addWidget(self.pause_button)
         layout.addWidget(self.auto_refresh_label)
         layout.addWidget(self.state_label)
 
     def _emit_open_results(self, checked: bool = False) -> None:
         del checked
         self.open_results_clicked.emit()
+
+    def _emit_pause(self, checked: bool = False) -> None:
+        del checked
+        self.pause_clicked.emit()
 
     def populate_runs(
         self,
@@ -119,6 +136,10 @@ class Header(QFrame):
         self.state_label.setProperty("runState", state.value)
         self.state_label.style().unpolish(self.state_label)
         self.state_label.style().polish(self.state_label)
+
+        self.pause_button.setEnabled(
+            state.value == "running"
+        )
 
     def current_run_id(self) -> str | None:
         data = self.run_selector.currentData()
