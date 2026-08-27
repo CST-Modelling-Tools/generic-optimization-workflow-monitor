@@ -5,13 +5,18 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
+from gow_monitor.application import RunControlPort
 from gow_monitor.domain import (
     EvaluationPoint,
     GowProcessResourceSnapshot,
     RunSnapshot,
+    RunState,
     SystemResourceSnapshot,
 )
-from gow_monitor.infrastructure import GowFilesystemRunReader
+from gow_monitor.infrastructure import (
+    GowFilesystemRunController,
+    GowFilesystemRunReader,
+)
 from gow_monitor.ui.live_refresh import LiveRefreshController, LiveRefreshPayload
 from gow_monitor.ui.resource_monitor import ResourceMonitorController
 
@@ -28,12 +33,14 @@ class MainViewModel(QObject):
     gow_resource_updated = Signal(object, object)
     resource_error = Signal(str)
     gow_resource_error = Signal(str)
+    pause_request_succeeded = Signal(str)
 
     def __init__(
         self,
         parent: QObject | None = None,
         *,
         gow_pid: int | None = None,
+        run_controller: RunControlPort | None = None,
     ) -> None:
         super().__init__(parent)
 
@@ -41,6 +48,12 @@ class MainViewModel(QObject):
         self._snapshots: tuple[RunSnapshot, ...] = ()
         self._histories: dict[str, tuple[EvaluationPoint, ...]] = {}
         self._connected_path: Path | None = None
+
+        self.run_controller: RunControlPort = (
+            run_controller
+            if run_controller is not None
+            else GowFilesystemRunController()
+        )
 
         self._resource_history: deque[SystemResourceSnapshot] = deque(maxlen=60)
         self._gow_resource_history: deque[
@@ -155,6 +168,38 @@ class MainViewModel(QObject):
 
     def refresh_connected_results(self) -> bool:
         return self.live_refresh.refresh_now()
+
+    def request_pause(
+        self,
+        snapshot: RunSnapshot,
+    ) -> str:
+        """Request a cooperative pause for one running GOW run.
+
+        The filesystem write itself is intentionally delegated to the
+        RunControlPort. The ViewModel owns the application-state guard and
+        immediately exposes PAUSE_REQUESTED to the UI while filesystem
+        refresh catches up with the newly written control artifact.
+        """
+
+        if snapshot.state is not RunState.RUNNING:
+            raise ValueError(
+                "Pause can only be requested for a RUNNING GOW run "
+                f"(current state: {snapshot.state.value})"
+            )
+
+        request_id = self.run_controller.request_pause(
+            snapshot.reference
+        )
+
+        self.run_state_changed.emit(
+            RunState.PAUSE_REQUESTED
+        )
+
+        self.pause_request_succeeded.emit(
+            request_id
+        )
+
+        return request_id
 
     def start_monitoring(self) -> None:
         if not self.resource_monitor.is_active:
