@@ -478,17 +478,95 @@ class GowFilesystemRunReader:
         return self.snapshot_of(run).state
 
     @staticmethod
-    def _state_from_records(
+    def _checkpoint_status(
         run: RunReference,
-        records: dict[str, dict[str, Any]],
+    ) -> str | None:
+        manifest_path = (
+            run.run_root
+            / "checkpoint"
+            / "manifest.json"
+        )
+
+        payload = GowFilesystemRunReader._read_json_object(
+            manifest_path
+        )
+
+        raw_status = payload.get("status")
+
+        if not isinstance(raw_status, str):
+            return None
+
+        status = raw_status.strip().lower()
+
+        return status or None
+
+    @classmethod
+    def _state_from_artifacts(
+        cls,
+        run: RunReference,
+        *,
+        has_records: bool,
     ) -> RunState:
         if not run.run_root.is_dir():
             return RunState.UNKNOWN
-        if not records:
+
+        checkpoint_status = cls._checkpoint_status(run)
+
+        # A completed checkpoint is authoritative.
+        if checkpoint_status == "completed":
+            return RunState.COMPLETED
+
+        control_root = run.run_root / "control"
+
+        pause_request_path = (
+            control_root
+            / "pause.request.json"
+        )
+
+        pause_ack_path = (
+            control_root
+            / "pause.ack.json"
+        )
+
+        # The request still exists until GOW reaches a safe generation
+        # boundary, persists its checkpoint and acknowledges the pause.
+        if pause_request_path.is_file():
+            return RunState.PAUSE_REQUESTED
+
+        # The acknowledgement may remain on disk after a later resume.
+        # Therefore ACK alone is not sufficient: the checkpoint must
+        # still explicitly state that the run is paused.
+        if (
+            checkpoint_status == "paused"
+            and pause_ack_path.is_file()
+        ):
+            return RunState.PAUSED
+
+        # Checkpoint-aware runs use the manifest as their authoritative
+        # lifecycle signal.
+        if checkpoint_status == "running":
+            return RunState.RUNNING
+
+        if not has_records:
             return RunState.WAITING
+
+        # Backward compatibility for runs created before the checkpoint
+        # protocol existed.
         if (run.run_root / "results.jsonl").is_file():
             return RunState.COMPLETED
+
         return RunState.RUNNING
+
+    @classmethod
+    def _state_from_records(
+        cls,
+        run: RunReference,
+        records: dict[str, dict[str, Any]],
+    ) -> RunState:
+        return cls._state_from_artifacts(
+            run,
+            has_records=bool(records),
+        )
 
     def snapshot_of(self, run: RunReference) -> RunSnapshot:
         return self.snapshot_and_history_of(run)[0]
@@ -688,13 +766,26 @@ class GowFilesystemRunReader:
                 (str(path), stat.st_size, stat.st_mtime_ns)
             )
 
-        for path in (metadata_path, final_results_path):
+        control_root = run.run_root / "control"
+        checkpoint_root = run.run_root / "checkpoint"
+
+        state_paths = (
+            metadata_path,
+            final_results_path,
+            control_root / "pause.request.json",
+            control_root / "pause.ack.json",
+            checkpoint_root / "manifest.json",
+        )
+
+        for path in state_paths:
             if not path.is_file():
                 continue
+
             try:
                 stat = path.stat()
             except OSError:
                 continue
+
             fingerprint_items.append(
                 (
                     str(path),
@@ -722,12 +813,16 @@ class GowFilesystemRunReader:
 
         metadata = self._metadata_for(run.run_id, run.run_root)
         finalized = bool(metadata.get("finalized", False))
-        if finalized or (run.run_root / "results.jsonl").is_file():
+
+        if finalized:
             state = RunState.COMPLETED
-        elif accumulator.evaluation_count:
-            state = RunState.RUNNING
         else:
-            state = RunState.WAITING
+            state = self._state_from_artifacts(
+                run,
+                has_records=bool(
+                    accumulator.evaluation_count
+                ),
+            )
 
         mean_objective = (
             accumulator.objective_sum
