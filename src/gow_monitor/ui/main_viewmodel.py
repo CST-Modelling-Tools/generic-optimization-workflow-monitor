@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from gow_monitor.application import RunControlPort
+from gow_monitor.application import RunControlPort, RunResumePort
 from gow_monitor.domain import (
     EvaluationPoint,
     GowProcessResourceSnapshot,
@@ -14,6 +14,7 @@ from gow_monitor.domain import (
     SystemResourceSnapshot,
 )
 from gow_monitor.infrastructure import (
+    GowCliRunResumer,
     GowFilesystemRunController,
     GowFilesystemRunReader,
 )
@@ -34,6 +35,7 @@ class MainViewModel(QObject):
     resource_error = Signal(str)
     gow_resource_error = Signal(str)
     pause_request_succeeded = Signal(str)
+    resume_request_succeeded = Signal(int)
 
     def __init__(
         self,
@@ -41,6 +43,7 @@ class MainViewModel(QObject):
         *,
         gow_pid: int | None = None,
         run_controller: RunControlPort | None = None,
+        run_resumer: RunResumePort | None = None,
     ) -> None:
         super().__init__(parent)
 
@@ -53,6 +56,12 @@ class MainViewModel(QObject):
             run_controller
             if run_controller is not None
             else GowFilesystemRunController()
+        )
+
+        self.run_resumer: RunResumePort = (
+            run_resumer
+            if run_resumer is not None
+            else GowCliRunResumer()
         )
 
         self._resource_history: deque[SystemResourceSnapshot] = deque(maxlen=60)
@@ -144,10 +153,12 @@ class MainViewModel(QObject):
     ) -> None:
         """Connect without blocking the UI during initial artifact discovery."""
         selected_path = Path(results_root).expanduser().resolve()
+
         if not selected_path.exists():
             raise FileNotFoundError(
                 f"The selected path does not exist: {selected_path}"
             )
+
         if not selected_path.is_dir():
             raise NotADirectoryError(
                 f"The selected path is not a directory: {selected_path}"
@@ -159,11 +170,13 @@ class MainViewModel(QObject):
         self._connected_path = selected_path
 
         self.live_refresh.connect_path(selected_path)
+
         self.refresh_status_changed.emit(
             "SYNC",
             "busy",
             "Initial GOW artifact discovery is running in a background worker.",
         )
+
         self.live_refresh.refresh_now()
 
     def refresh_connected_results(self) -> bool:
@@ -201,6 +214,44 @@ class MainViewModel(QObject):
 
         return request_id
 
+    def request_resume(
+        self,
+        snapshot: RunSnapshot,
+    ) -> int:
+        """Resume one PAUSED GOW run using its persisted runtime context.
+
+        The actual subprocess launch is delegated to RunResumePort.
+
+        RESUMING is emitted only after the adapter successfully launches
+        the new GOW process and returns a valid PID. If launching fails,
+        the exception propagates and no optimistic state transition is
+        emitted.
+        """
+
+        if snapshot.state is not RunState.PAUSED:
+            raise ValueError(
+                "Resume can only be requested for a PAUSED GOW run "
+                f"(current state: {snapshot.state.value})"
+            )
+
+        pid = self.run_resumer.resume(
+            snapshot.reference
+        )
+
+        self.resource_monitor.attach_gow_process(
+            pid
+        )
+
+        self.run_state_changed.emit(
+            RunState.RESUMING
+        )
+
+        self.resume_request_succeeded.emit(
+            pid
+        )
+
+        return pid
+
     def start_monitoring(self) -> None:
         if not self.resource_monitor.is_active:
             self.resource_monitor.start()
@@ -232,8 +283,10 @@ class MainViewModel(QObject):
     def _on_refresh_completed(self, payload: object) -> None:
         if not isinstance(payload, LiveRefreshPayload):
             return
+
         if self._connected_path is None:
             return
+
         if payload.selected_path != self._connected_path:
             return
 
@@ -275,6 +328,7 @@ class MainViewModel(QObject):
             return
 
         self._resource_history.append(payload)
+
         self.system_resource_updated.emit(
             payload,
             tuple(self._resource_history),
@@ -292,6 +346,7 @@ class MainViewModel(QObject):
             return
 
         self._gow_resource_history.append(payload)
+
         self.gow_resource_updated.emit(
             payload,
             tuple(self._gow_resource_history),

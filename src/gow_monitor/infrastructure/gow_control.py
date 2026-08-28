@@ -10,7 +10,6 @@ from typing import Any
 
 from gow_monitor.domain import RunReference
 
-
 PAUSE_REQUEST_FILENAME = "pause.request.json"
 
 

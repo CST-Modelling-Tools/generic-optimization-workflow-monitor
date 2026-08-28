@@ -16,6 +16,14 @@ class RunReaderPort(Protocol):
         """Return a filesystem-derived snapshot of one run."""
 
 
+class RunResumePort(Protocol):
+    def resume(
+        self,
+        run: RunReference,
+    ) -> int:
+        """Launch GOW resume for a paused run and return the new PID."""
+
+
 class RunControlPort(Protocol):
     def request_pause(self, run: RunReference) -> str:
         """Request a cooperative pause and return its request id."""

@@ -16,6 +16,7 @@ class Header(QFrame):
     run_selected = Signal(int)
     open_results_clicked = Signal()
     pause_clicked = Signal()
+    continue_clicked = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -55,6 +56,16 @@ class Header(QFrame):
             self._emit_pause
         )
 
+        self.continue_button = QPushButton("Continue")
+        self.continue_button.setObjectName("primaryButton")
+        self.continue_button.setEnabled(False)
+        self.continue_button.setToolTip(
+            "Resume this paused GOW run from its persisted checkpoint."
+        )
+        self.continue_button.clicked.connect(
+            self._emit_continue
+        )
+
         self.auto_refresh_label = QLabel("AUTO OFF")
         self.auto_refresh_label.setObjectName("refreshBadge")
         self.auto_refresh_label.setProperty("refreshState", "off")
@@ -73,6 +84,7 @@ class Header(QFrame):
         layout.addWidget(self.run_selector)
         layout.addWidget(self.open_results_button)
         layout.addWidget(self.pause_button)
+        layout.addWidget(self.continue_button)
         layout.addWidget(self.auto_refresh_label)
         layout.addWidget(self.state_label)
 
@@ -83,6 +95,10 @@ class Header(QFrame):
     def _emit_pause(self, checked: bool = False) -> None:
         del checked
         self.pause_clicked.emit()
+
+    def _emit_continue(self, checked: bool = False) -> None:
+        del checked
+        self.continue_clicked.emit()
 
     def populate_runs(
         self,
@@ -139,6 +155,10 @@ class Header(QFrame):
 
         self.pause_button.setEnabled(
             state.value == "running"
+        )
+
+        self.continue_button.setEnabled(
+            state.value == "paused"
         )
 
     def current_run_id(self) -> str | None:

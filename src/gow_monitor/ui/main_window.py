@@ -76,6 +76,7 @@ class MainWindow(QMainWindow):
         self.job_label = self.header.job_label
         self.open_results_button = self.header.open_results_button
         self.pause_button = self.header.pause_button
+        self.continue_button = self.header.continue_button
         self.auto_refresh_label = self.header.auto_refresh_label
         self.state_label = self.header.state_label
 
@@ -277,6 +278,9 @@ class MainWindow(QMainWindow):
         self.header.pause_clicked.connect(
             self._request_pause_current_run
         )
+        self.header.continue_clicked.connect(
+            self._request_resume_current_run
+        )
         self.header.run_selected.connect(self._on_run_selected)
         self.sidebar.page_selected.connect(self.select_page)
 
@@ -363,6 +367,27 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "Unable to pause GOW run",
+                str(exc),
+            )
+
+    def _request_resume_current_run(self) -> None:
+        snapshot = self.current_snapshot
+
+        if snapshot is None:
+            return
+
+        try:
+            self.viewmodel.request_resume(
+                snapshot
+            )
+        except (
+            ValueError,
+            RuntimeError,
+            OSError,
+        ) as exc:
+            QMessageBox.warning(
+                self,
+                "Unable to continue GOW run",
                 str(exc),
             )
 
