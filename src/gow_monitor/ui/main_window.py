@@ -180,6 +180,11 @@ class MainWindow(QMainWindow):
         self.overview_page = OverviewPage()
         self.page_titles["Overview"] = self.overview_page.title_label
 
+        self.overview_page.install_run_controls(
+            self.header.pause_button,
+            self.header.continue_button,
+        )
+
         self.overview_scroll = QScrollArea()
         self.overview_scroll.setObjectName("overviewScroll")
         self.overview_scroll.setWidgetResizable(True)

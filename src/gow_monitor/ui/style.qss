@@ -598,3 +598,68 @@ QFrame#runTimerPanel[timerState="final"] QLabel#runTimerStatus {
     background: #173B2B;
     border-color: #245C42;
 }
+
+
+/* STEP 42.12 - Integrated run lifecycle controls */
+
+QPushButton#runPauseButton,
+QPushButton#runContinueButton {
+    background: #0A1420;
+    color: #526A80;
+    border: 1px solid #21364A;
+    border-radius: 7px;
+    padding: 0 12px;
+    font-family: "Segoe UI";
+    font-size: 11px;
+    font-weight: 700;
+}
+
+QPushButton#runPauseButton:disabled,
+QPushButton#runContinueButton:disabled {
+    background: #09121C;
+    color: #43576A;
+    border-color: #1B2B3B;
+}
+
+QPushButton#runPauseButton:enabled {
+    background: #211C0D;
+    color: #F6CE66;
+    border-color: #675525;
+}
+
+QPushButton#runPauseButton:hover:enabled {
+    background: #302711;
+    color: #FFE08A;
+    border-color: #8A712E;
+}
+
+QPushButton#runPauseButton:pressed:enabled {
+    background: #181307;
+}
+
+QPushButton#runContinueButton:enabled {
+    background: #10281D;
+    color: #72E2A7;
+    border-color: #245C42;
+}
+
+QPushButton#runContinueButton:hover:enabled {
+    background: #173A2A;
+    color: #91F2BD;
+    border-color: #347A59;
+}
+
+QPushButton#runContinueButton:pressed:enabled {
+    background: #0C1F17;
+}
+
+QFrame#runTimerPanel[timerState="paused"] {
+    background: #1A170B;
+    border-color: #806725;
+}
+
+QFrame#runTimerPanel[timerState="paused"] QLabel#runTimerStatus {
+    color: #F6CE66;
+    background: #41361A;
+    border-color: #675525;
+}

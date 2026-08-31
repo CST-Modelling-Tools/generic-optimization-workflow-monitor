@@ -58,12 +58,21 @@ class OverviewPage(QWidget):
         }
     )
 
+    _PAUSED_RUNTIME_STATES = frozenset(
+        {
+            RunState.PAUSED,
+            RunState.RESUMING,
+        }
+    )
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("page")
         self._snapshot: RunSnapshot | None = None
         self._history: tuple[EvaluationPoint, ...] = ()
         self._runtime_completion_times: dict[str, float] = {}
+        self._runtime_paused_seconds: dict[str, float] = {}
+        self._runtime_pause_started_at: dict[str, float] = {}
         self._evaluation_detail_base = ""
         self._objective_decimals = self._OBJECTIVE_DECIMALS_MIN
         self._progress_dialog: ChartDialog | None = None
@@ -121,16 +130,14 @@ class OverviewPage(QWidget):
                 continue
             cards_layout.addWidget(card, 1)
 
-        timer_row = QHBoxLayout()
-        timer_row.setContentsMargins(0, 0, 0, 0)
-        timer_row.setSpacing(0)
+        self.timer_row = QHBoxLayout()
+        self.timer_row.setContentsMargins(0, 0, 0, 0)
+        self.timer_row.setSpacing(10)
 
         self.timer_panel = QFrame()
         self.timer_panel.setObjectName("runTimerPanel")
         self.timer_panel.setProperty("timerState", "waiting")
-        self.timer_panel.setMinimumWidth(270)
-        self.timer_panel.setMaximumWidth(340)
-        self.timer_panel.setFixedHeight(50)
+        self.timer_panel.setFixedSize(300, 50)
 
         timer_layout = QHBoxLayout(self.timer_panel)
         timer_layout.setContentsMargins(14, 5, 12, 5)
@@ -154,9 +161,9 @@ class OverviewPage(QWidget):
         timer_layout.addWidget(self.timer_value_label, 1)
         timer_layout.addWidget(self.timer_status_label)
 
-        timer_row.addStretch(1)
-        timer_row.addWidget(self.timer_panel)
-        timer_row.addStretch(1)
+        self.timer_row.addStretch(1)
+        self.timer_row.addWidget(self.timer_panel)
+        self.timer_row.addStretch(1)
 
         self.dashboard_layout = QGridLayout()
         self.dashboard_layout.setContentsMargins(0, 0, 0, 0)
@@ -285,7 +292,7 @@ class OverviewPage(QWidget):
         self._reflow_lower_panels(stacked=False)
 
         layout.addLayout(heading_row)
-        layout.addLayout(timer_row)
+        layout.addLayout(self.timer_row)
         layout.addLayout(cards_layout)
         layout.addLayout(self.dashboard_layout, 1)
         layout.addLayout(self.lower_layout)
@@ -298,6 +305,69 @@ class OverviewPage(QWidget):
 
         self.clear()
         self.runtime_timer.start()
+
+    def install_run_controls(
+        self,
+        pause_button: QPushButton,
+        continue_button: QPushButton,
+    ) -> None:
+        """Place the run lifecycle controls around the central timer.
+
+        The buttons remain the same instances owned by HeaderWidget.
+        Only their visual parent and layout position change, preserving the
+        already validated signal and state-machine behavior.
+        """
+
+        if self.timer_row.indexOf(pause_button) >= 0:
+            return
+
+        if self.timer_row.indexOf(continue_button) >= 0:
+            return
+
+        pause_button.setParent(self)
+        continue_button.setParent(self)
+
+        pause_button.setText("⏸  Pause")
+        continue_button.setText("▶  Continue")
+
+        pause_button.setFixedSize(
+            self.timer_panel.size()
+        )
+        continue_button.setFixedSize(
+            self.timer_panel.size()
+        )
+
+        pause_button.setAccessibleName(
+            "Pause optimization"
+        )
+        continue_button.setAccessibleName(
+            "Continue optimization"
+        )
+
+        pause_button.setToolTip(
+            "Pause after GOW reaches the next safe generation boundary."
+        )
+        continue_button.setToolTip(
+            "Continue this run from its persisted checkpoint."
+        )
+
+        # Current items:
+        #
+        #   stretch | timer | stretch
+        #
+        # Result:
+        #
+        #   stretch | Pause | timer | Continue | stretch
+        #
+        self.timer_row.insertWidget(
+            1,
+            pause_button,
+        )
+
+        self.timer_row.insertWidget(
+            self.timer_row.count() - 1,
+            continue_button,
+        )
 
     @property
     def lower_panels_stacked(self) -> bool:
@@ -563,7 +633,23 @@ class OverviewPage(QWidget):
             return
 
         terminal = self._runtime_is_final(snapshot)
-        elapsed_detail = "Final duration" if terminal else "Running"
+        runtime_paused = (
+            snapshot.state in self._PAUSED_RUNTIME_STATES
+        )
+
+        if terminal:
+            elapsed_detail = "Final duration"
+            timer_status = "FINAL"
+            timer_state = "final"
+        elif runtime_paused:
+            elapsed_detail = "Paused"
+            timer_status = snapshot.state.value.upper()
+            timer_state = "paused"
+        else:
+            elapsed_detail = "Running"
+            timer_status = "LIVE"
+            timer_state = "running"
+
         throughput = (
             snapshot.evaluation_count * 60.0 / elapsed
             if elapsed >= 1.0
@@ -578,8 +664,8 @@ class OverviewPage(QWidget):
         )
         self._set_timer_display(
             duration_text,
-            status="FINAL" if terminal else "LIVE",
-            state="final" if terminal else "running",
+            status=timer_status,
+            state=timer_state,
         )
         self._render_evaluation_rate(
             throughput=throughput,
@@ -649,6 +735,52 @@ class OverviewPage(QWidget):
             return True
         return snapshot.state in self._TERMINAL_STATES
 
+    def _sync_runtime_pause_state(
+        self,
+        snapshot: RunSnapshot,
+    ) -> None:
+        """Track live paused intervals for one observed GOW run.
+
+        PAUSE_REQUESTED deliberately remains active runtime because GOW may
+        still be completing the current safe generation boundary.
+
+        PAUSED and RESUMING do not consume active runtime.
+        """
+
+        run_id = snapshot.reference.run_id
+        now = time.time()
+
+        if snapshot.state in self._PAUSED_RUNTIME_STATES:
+            if run_id not in self._runtime_pause_started_at:
+                self._runtime_pause_started_at[run_id] = now
+            return
+
+        pause_started_at = self._runtime_pause_started_at.pop(
+            run_id,
+            None,
+        )
+
+        if pause_started_at is None:
+            return
+
+        if (
+            snapshot.state in self._TERMINAL_STATES
+            and snapshot.run_finished_at is not None
+        ):
+            pause_finished_at = snapshot.run_finished_at
+        else:
+            pause_finished_at = now
+
+        paused_seconds = max(
+            0.0,
+            pause_finished_at - pause_started_at,
+        )
+
+        self._runtime_paused_seconds[run_id] = (
+            self._runtime_paused_seconds.get(run_id, 0.0)
+            + paused_seconds
+        )
+
     def _elapsed_seconds(
         self,
         snapshot: RunSnapshot,
@@ -657,6 +789,7 @@ class OverviewPage(QWidget):
         if started_at is None:
             return None
 
+        self._sync_runtime_pause_state(snapshot)
         self._capture_runtime_completion(snapshot)
         run_id = snapshot.reference.run_id
 
@@ -670,7 +803,25 @@ class OverviewPage(QWidget):
         else:
             end_time = time.time()
 
-        return max(0.0, end_time - started_at)
+        paused_seconds = self._runtime_paused_seconds.get(
+            run_id,
+            0.0,
+        )
+
+        pause_started_at = self._runtime_pause_started_at.get(
+            run_id
+        )
+
+        if pause_started_at is not None:
+            paused_seconds += max(
+                0.0,
+                end_time - pause_started_at,
+            )
+
+        return max(
+            0.0,
+            end_time - started_at - paused_seconds,
+        )
 
     @staticmethod
     def _format_duration(seconds: float) -> str:

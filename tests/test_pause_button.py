@@ -53,7 +53,22 @@ def test_pause_button_is_disabled_without_running_run(
 
     qtbot.addWidget(window)
 
-    assert window.pause_button.text() == "Pause"
+    assert "Pause" in window.pause_button.text()
+    assert window.pause_button.objectName() == "runPauseButton"
+    assert window.pause_button.parent() is window.overview_page
+    assert window.header.layout().indexOf(window.pause_button) == -1
+    assert (
+        window.overview_page.timer_row.indexOf(
+            window.pause_button
+        )
+        >= 0
+    )
+    assert (
+        window.pause_button.size()
+        == window.overview_page.timer_panel.size()
+    )
+    assert window.pause_button.width() == 300
+    assert window.pause_button.height() == 50
     assert not window.pause_button.isEnabled()
 
     window.header.set_run_state(

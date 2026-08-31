@@ -122,7 +122,22 @@ def test_continue_button_state_machine(
     window = MainWindow()
     qtbot.addWidget(window)
 
-    assert window.continue_button.text() == "Continue"
+    assert "Continue" in window.continue_button.text()
+    assert window.continue_button.objectName() == "runContinueButton"
+    assert window.continue_button.parent() is window.overview_page
+    assert window.header.layout().indexOf(window.continue_button) == -1
+    assert (
+        window.overview_page.timer_row.indexOf(
+            window.continue_button
+        )
+        >= 0
+    )
+    assert (
+        window.continue_button.size()
+        == window.overview_page.timer_panel.size()
+    )
+    assert window.continue_button.width() == 300
+    assert window.continue_button.height() == 50
     assert not window.pause_button.isEnabled()
     assert not window.continue_button.isEnabled()
 

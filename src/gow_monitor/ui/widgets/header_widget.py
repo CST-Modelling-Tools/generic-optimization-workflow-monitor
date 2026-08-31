@@ -46,7 +46,7 @@ class Header(QFrame):
         )
 
         self.pause_button = QPushButton("Pause")
-        self.pause_button.setObjectName("primaryButton")
+        self.pause_button.setObjectName("runPauseButton")
         self.pause_button.setEnabled(False)
         self.pause_button.setToolTip(
             "Request a cooperative pause at the next safe "
@@ -57,7 +57,7 @@ class Header(QFrame):
         )
 
         self.continue_button = QPushButton("Continue")
-        self.continue_button.setObjectName("primaryButton")
+        self.continue_button.setObjectName("runContinueButton")
         self.continue_button.setEnabled(False)
         self.continue_button.setToolTip(
             "Resume this paused GOW run from its persisted checkpoint."
@@ -83,8 +83,6 @@ class Header(QFrame):
         layout.addStretch(1)
         layout.addWidget(self.run_selector)
         layout.addWidget(self.open_results_button)
-        layout.addWidget(self.pause_button)
-        layout.addWidget(self.continue_button)
         layout.addWidget(self.auto_refresh_label)
         layout.addWidget(self.state_label)
 
